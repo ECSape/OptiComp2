@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from hw import elliptec as ell
 
 DEFAULT_PORT = "COM4"
+__version__ = "0.4"        # shown in the title bar and log header so the running build is unambiguous
 
 # Device roles on the OptiComp bus (from stageframework.py + thesis chapter 4).
 DEVICES = [
@@ -219,7 +220,7 @@ class DevicePanel(ttk.LabelFrame):
 class App(tk.Tk):
     def __init__(self):
         tk.Tk.__init__(self)
-        self.title("OptiComp2 – 手动硬件控制 (电机 / 快门 / 光谱仪)")
+        self.title("OptiComp2 v%s – 手动硬件控制 (电机 / 快门 / 光谱仪 / 序列)" % __version__)
         self.bus = None
         self.sequence_running = False
         self.results = queue.Queue()
@@ -231,7 +232,7 @@ class App(tk.Tk):
         self.autolog_path = os.path.join(logdir, time.strftime("manual_%Y%m%d_%H%M%S.log"))
         self.autolog = open(self.autolog_path, "a", encoding="utf-8")
         self._build()
-        self._log_line("--- auto log: %s ---" % os.path.abspath(self.autolog_path))
+        self._log_line("--- OptiComp2 GUI v%s, auto log: %s ---" % (__version__, os.path.abspath(self.autolog_path)))
         self.after(100, self._poll_results)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 

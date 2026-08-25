@@ -29,8 +29,9 @@ class SequencePanel(ttk.Frame):
 
     # ---- layout ------------------------------------------------------------
     def _build(self):
-        left = ttk.LabelFrame(self, text="步骤队列", padding=6)
+        left = ttk.LabelFrame(self, text="步骤队列 (0 步, 0 次采集)", padding=6)
         left.grid(row=0, column=0, sticky="nsew", padx=4)
+        self.queue_frame = left
         self.listbox = tk.Listbox(left, width=52, height=22, font=("Consolas", 9))
         self.listbox.pack(fill="both", expand=True)
         b = ttk.Frame(left)
@@ -107,11 +108,19 @@ class SequencePanel(ttk.Frame):
     def _avg(self):
         return max(1, int(self.avg_var.get() or 1))
 
+    def _update_counts(self):
+        n_acq = sum(1 for s in self.steps if s.kind == "acquire")
+        self.queue_frame.config(text="步骤队列 (%d 步, %d 次采集)" % (len(self.steps), n_acq))
+
     def _add(self, steps):
+        if self.running:
+            messagebox.showwarning("序列运行中", "运行期间不能修改队列")
+            return
         for s in steps:
             self.steps.append(s)
             self.listbox.insert("end", "%3d  %s" % (len(self.steps), s.text))
         self.listbox.see("end")
+        self._update_counts()
 
     def add_reference(self):
         self._add(sq.build_reference_calibration())
@@ -151,12 +160,16 @@ class SequencePanel(ttk.Frame):
         self._add([sq.pause(self.pause_var.get())])
 
     def remove_selected(self):
+        if self.running:
+            return
         sel = list(self.listbox.curselection())
         for i in reversed(sel):
             del self.steps[i]
         self._refresh()
 
     def clear(self):
+        if self.running:
+            return
         self.steps = []
         self._refresh()
 
@@ -164,6 +177,7 @@ class SequencePanel(ttk.Frame):
         self.listbox.delete(0, "end")
         for i, s in enumerate(self.steps):
             self.listbox.insert("end", "%3d  %s" % (i + 1, s.text))
+        self._update_counts()
 
     # ---- running -----------------------------------------------------------
     def run(self):
@@ -176,8 +190,16 @@ class SequencePanel(ttk.Frame):
         if os.path.isdir(outdir) and os.listdir(outdir):
             if not messagebox.askyesno("目录已存在", "%s 已有数据，同名文件会被覆盖。继续？" % outdir):
                 return
-        n_acq = sum(1 for s in self.steps if s.kind == "acquire")
-        if not messagebox.askyesno("运行序列", "共 %d 步，%d 次采集，数据目录:\n%s\n\n电机将自动运动。开始？" % (len(self.steps), n_acq, outdir)):
+        tags = [s.params["tag"] for s in self.steps if s.kind == "acquire"]
+        n_acq = len(tags)
+        dups = sorted(set(t for t in tags if tags.count(t) > 1 and t != "dark"))
+        if dups:
+            if not messagebox.askyesno("重复标签", "队列里有 %d 个标签重复（例如 %s），后一次采集会覆盖前一次的文件。\n"
+                                       "通常是因为多次点击了添加按钮——建议先『清空』再重新添加。\n\n仍要运行？"
+                                       % (len(dups), ", ".join(dups[:4]))):
+                return
+        est = sum(s.params["avg"] for s in self.steps if s.kind == "acquire")
+        if not messagebox.askyesno("运行序列", "共 %d 步，%d 次采集（约 %d 帧曝光），数据目录:\n%s\n\n电机将自动运动。开始？" % (len(self.steps), n_acq, est, outdir)):
             return
         self.running = True
         self.app.sequence_running = True
@@ -218,6 +240,7 @@ class SequencePanel(ttk.Frame):
 
     def _done(self, manifest):
         self._finish("完成: %d 个光谱已保存" % len(manifest))
+        self.clear()                       # a finished queue must not silently run again
 
     def _finish(self, text):
         self.running = False
