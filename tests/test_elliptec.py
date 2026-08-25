@@ -149,6 +149,20 @@ class BusTests(unittest.TestCase):
         self.assertEqual(ser.sent.count(b"2ma00004473"), 1)
         self.assertNotIn(b"2gp", ser.sent[1:])                 # position came from the PO, no extra gp
 
+    def test_mechanical_timeout_retried_once(self):
+        bus, ser = make_bus({b"3ma00011FC7": [b"3GS02\r\n", b"3PO00011FC7\r\n"], b"3gp": [b"3PO00011E7D\r\n"]})
+        bus.mech_retry_delay = 0
+        self.assertEqual(bus.move_abs("3", 0x11FC7), 0x11FC7)
+        self.assertEqual(ser.sent.count(b"3ma00011FC7"), 2)
+
+    def test_mechanical_timeout_twice_raises(self):
+        bus, ser = make_bus({b"3ma00011FC7": [b"3GS02\r\n"], b"3gp": [b"3PO00011E7D\r\n"]})
+        bus.mech_retry_delay = 0
+        with self.assertRaises(ell.DeviceStatusError) as cm:
+            bus.move_abs("3", 0x11FC7)
+        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(ser.sent.count(b"3ma00011FC7"), 2)
+
     def test_shutter_no_move_is_not_retried(self):
         bus, ser = make_bus({b"0fw": [b""], b"0gs": [b"0GS00\r\n"], b"0gp": [b"0PO0000001F\r\n"]})
         bus.first_wait = 0.01

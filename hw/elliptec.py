@@ -20,6 +20,7 @@ DEFAULT_TIMEOUT = 10.0          # seconds to wait for one reply line (queries)
 MOTION_TIMEOUT = 60.0           # motion commands reply only once the move has finished
 FIRST_WAIT = 2.0                # wait for the direct reply this long before polling GS
 BUSY = 9
+MECHANICAL_TIMEOUT = 2
 
 STATUS_CODES = {
     0: "OK",
@@ -143,6 +144,7 @@ class ElliptecBus(object):
         self.poll_interval = 0.5
         self.attempts = 3                         # resend a swallowed motion command this many times
         self.position_tolerance = 20              # pulses (0.05 deg on ELL14/18)
+        self.mech_retry_delay = 1.0               # seconds before retrying after GS02
 
     # ---- low level ---------------------------------------------------------
     def close(self):
@@ -246,6 +248,17 @@ class ElliptecBus(object):
             time.sleep(self.poll_interval)
 
     def _motion_query(self, addr, cmd, data="", expect_position=True, target=None, retry_if_unmoved=True):
+        """Motion command with one automatic retry after a mechanical time-out (GS02)."""
+        try:
+            return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved)
+        except DeviceStatusError as e:
+            if e.code != MECHANICAL_TIMEOUT:
+                raise
+            self._log("--", "module %s mechanical time-out on %s%s, retrying once after %.0f s" % (addr, cmd, data, self.mech_retry_delay))
+            time.sleep(self.mech_retry_delay)
+            return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved)
+
+    def _motion_query_once(self, addr, cmd, data="", expect_position=True, target=None, retry_if_unmoved=True):
         """Issue a motion command robustly.
 
         Observed on the real bus (2026-08-25): an ELL18 occasionally swallows a `ma`
