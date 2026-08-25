@@ -221,6 +221,7 @@ class App(tk.Tk):
         tk.Tk.__init__(self)
         self.title("OptiComp2 – 手动硬件控制 (电机 / 快门 / 光谱仪)")
         self.bus = None
+        self.sequence_running = False
         self.results = queue.Queue()
         self.worker = HardwareWorker(self.results)
         self.worker.start()
@@ -256,6 +257,9 @@ class App(tk.Tk):
         from spectro_panel import SpectrometerPanel
         self.spectro = SpectrometerPanel(self.nb, self)
         self.nb.add(self.spectro, text="  光谱仪  ")
+        from sequence_panel import SequencePanel
+        self.sequence = SequencePanel(self.nb, self)
+        self.nb.add(self.sequence, text="  序列  ")
 
         body = ttk.Frame(stages_tab, padding=6)
         body.pack(fill="both", expand=True)
@@ -299,6 +303,9 @@ class App(tk.Tk):
         self._log_line("--- opened %s ---" % port)
 
     def disconnect(self):
+        if self.sequence_running:
+            messagebox.showwarning("序列运行中", "请先中止序列")
+            return
         if self.bus:
             self.bus.close()
             self.bus = None
@@ -327,6 +334,9 @@ class App(tk.Tk):
     def submit(self, label, fn, callback=None):
         if self.bus is None:
             messagebox.showwarning("未连接", "请先连接串口")
+            return
+        if self.sequence_running:
+            messagebox.showwarning("序列运行中", "序列执行期间禁止手动操作电机，请先中止序列")
             return
         self.worker.submit(label, fn, callback)
 

@@ -123,6 +123,9 @@ class SpectrometerPanel(ttk.Frame):
         self.btn_close.config(state="normal")
 
     def close_dev(self):
+        if getattr(self.app, "sequence_running", False):
+            messagebox.showwarning("序列运行中", "请先中止序列")
+            return
         self.worker.live.clear()
         if self.spec:
             s = self.spec
@@ -135,6 +138,9 @@ class SpectrometerPanel(ttk.Frame):
     def _need(self):
         if self.spec is None:
             messagebox.showwarning("未初始化", "请先初始化光谱仪")
+            return False
+        if getattr(self.app, "sequence_running", False):
+            messagebox.showwarning("序列运行中", "序列执行期间禁止手动读谱")
             return False
         return True
 
