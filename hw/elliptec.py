@@ -223,19 +223,24 @@ class ElliptecBus(object):
             time.sleep(poll)
 
     def _poll_until_idle(self, addr):
-        """Poll GS with a short timeout until the module answers 'not busy'.
+        """Poll GS with a short timeout until the module is no longer moving.
 
-        While an ELL module is moving it may answer GS09 (busy) or not answer at all;
-        both are treated as 'still moving'. Returns the final GS code.
+        Observed on the ELL18 (2026-08-25): while moving it answers nothing at all, and
+        the deferred PO (completion) reply arrives in the read window of a later `gs`.
+        So: no reply / GS09 -> still moving; PO -> move finished, position known.
+        Returns (gs_code, position_or_None).
         """
         t0 = time.time()
         while True:
             try:
-                code = self.status(addr, timeout=self.poll_timeout)
+                rep = self.query(addr, "gs", timeout=self.poll_timeout)
             except ReplyTimeout:
-                code = BUSY
-            if code != BUSY:
-                return code
+                rep = None
+            if rep is not None:
+                if rep["kind"] == "PO":
+                    return 0, rep["value"]
+                if rep["kind"] == "GS" and rep["code"] != BUSY:
+                    return rep["code"], None
             if time.time() - t0 > self.motion_timeout:
                 raise ElliptecError("module %s still busy after %.0f s" % (addr, self.motion_timeout))
             time.sleep(self.poll_interval)
@@ -261,12 +266,13 @@ class ElliptecBus(object):
                     return pos
                 raise ElliptecError("module %s reported %d after %s, expected %d" % (addr, pos, cmd, target))
             self._log("--", "no reply from %s to %s%s within %.0f s, polling status" % (addr, cmd, data, self.first_wait))
-            code = self._poll_until_idle(addr)
+            code, pos = self._poll_until_idle(addr)
             if code != 0:
                 raise DeviceStatusError(addr, code)
             if not expect_position:
                 return None
-            pos = self.position(addr)
+            if pos is None:
+                pos = self.position(addr)
             if target is None or abs(pos - target) <= self.position_tolerance:
                 return pos                                # reply lost but move completed
             if start is not None and abs(pos - start) <= self.position_tolerance and retry_if_unmoved:
@@ -280,12 +286,14 @@ class ElliptecBus(object):
         if rep["kind"] == "PO":
             return rep["value"]
         if rep["kind"] == "GS":
-            code = rep["code"]
+            code, pos = rep["code"], None
             if code == BUSY:
-                code = self.wait_idle(addr)
+                code, pos = self._poll_until_idle(addr)
             if code != 0:
                 raise DeviceStatusError(addr, code)
-            return self.position(addr) if expect_position else None
+            if not expect_position:
+                return None
+            return pos if pos is not None else self.position(addr)
         raise ElliptecError("unexpected reply %s" % rep["raw"])
 
     def home(self, addr, direction=0):

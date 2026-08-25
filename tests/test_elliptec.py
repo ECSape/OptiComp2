@@ -139,6 +139,16 @@ class BusTests(unittest.TestCase):
         bus.status("2")
         self.assertEqual(ser.timeouts_seen[-1], ell.DEFAULT_TIMEOUT)   # restored after the move
 
+    def test_deferred_po_arrives_during_gs_poll(self):
+        # real-bus case: ELL18 silent while moving, completion PO lands in the `gs` read window
+        bus, ser = make_bus({b"2ma00004473": [b""], b"2gs": [b"", b"2PO00004473\r\n"], b"2gp": [b"2PO00009C40\r\n"]})
+        bus.first_wait = 0.01
+        bus.poll_timeout = 0.01
+        bus.poll_interval = 0
+        self.assertEqual(bus.move_abs("2", 0x4473), 0x4473)
+        self.assertEqual(ser.sent.count(b"2ma00004473"), 1)
+        self.assertNotIn(b"2gp", ser.sent[1:])                 # position came from the PO, no extra gp
+
     def test_shutter_no_move_is_not_retried(self):
         bus, ser = make_bus({b"0fw": [b""], b"0gs": [b"0GS00\r\n"], b"0gp": [b"0PO0000001F\r\n"]})
         bus.first_wait = 0.01

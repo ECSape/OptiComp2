@@ -256,7 +256,11 @@ class SpectrometerPanel(ttk.Frame):
                     if label == "spec live":
                         self.worker.live.clear()
                         self.btn_live.config(text="连续读取")
-                    messagebox.showerror("光谱仪错误", "%s\n%s" % (label, value))
+                    if label == "sequence":
+                        self.app.sequence._finish("失败/中止: %s" % value)
+                        messagebox.showerror("序列失败", "%s\n\n队列已保留（已完成的步骤带 ✓），修正后可重新运行整个队列。" % value)
+                    else:
+                        messagebox.showerror("光谱仪错误", "%s\n%s" % (label, value))
         except queue.Empty:
             pass
         self.after(100, self._poll)
