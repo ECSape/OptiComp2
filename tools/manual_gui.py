@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from hw import elliptec as ell
 
 DEFAULT_PORT = "COM4"
-__version__ = "0.14"        # shown in the title bar and log header so the running build is unambiguous
+__version__ = "0.15"        # shown in the title bar and log header so the running build is unambiguous
 
 # Device roles on the OptiComp bus (from stageframework.py + thesis chapter 4).
 DEVICES = [
@@ -152,7 +152,13 @@ class DevicePanel(ttk.LabelFrame):
         self.app.submit("%s gp" % self.addr, lambda: self.app.bus.position(self.addr), self._show_position)
 
     def do_home(self):
-        if not messagebox.askyesno("回零", "模块 %s 将执行回零 (ho0)，会产生运动。继续？" % self.addr):
+        msg = "模块 %s 将执行回零 (ho0)，会产生运动。继续？" % self.addr
+        if str(self.addr) == str(cfg.SYSTEM):
+            # thesis 4.x: the fibre enters the sphere from below and winds around the lower support
+            # at excessive lower-stage rotation; homing may sweep a full turn -> mechanical time-out
+            msg = ("模块 %s 是带光纤的探测臂/下台。回零可能整圈旋转，光纤会缠绕在下支撑上并报 GS02。\n"
+                   "通常不需要回零：位置由传感器保持，直接用预设 44°/124°/150° 即可。\n\n仍要回零？" % self.addr)
+        if not messagebox.askyesno("回零", msg, default="no" if str(self.addr) == str(cfg.SYSTEM) else "yes"):
             return
         self.motion("ho0", self.app.bus_home)
 

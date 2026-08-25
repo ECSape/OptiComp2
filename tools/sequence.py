@@ -267,6 +267,10 @@ class Runner(object):
         rec.update(meta)
         path = os.path.join(self.outdir, rec["file"])
         np.savetxt(path, np.column_stack([self.wl, counts]), fmt="%.3f,%d", header="wavelength_nm,counts", comments="")
+        stale = [r for r in self.manifest if r.get("tag") == tag]
+        if stale:                                   # the CSV was just overwritten: drop records that described it
+            self.manifest = [r for r in self.manifest if r.get("tag") != tag]
+            self.log("replacing %d earlier record(s) of %s" % (len(stale), tag))
         self.manifest.append(rec)
         self._write_manifest()
         self.on_spectrum(rec, counts)

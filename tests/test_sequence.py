@@ -81,6 +81,15 @@ class BuilderTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_reacquired_tag_replaces_earlier_record(self):
+        bus, spec = FakeBus(), FakeSpec()
+        out = tempfile.mkdtemp()
+        r = sq.Runner(bus, spec, out)
+        r.run(sq.build_dark(1) + sq.build_single_angle(60, ["S"], 1, "x"))
+        man = sq.Runner(bus, spec, out).run(sq.build_single_angle(60, ["S"], 1, "x"))   # second run, same tag
+        self.assertEqual([m["tag"] for m in man], ["dark", "x_S_60"])
+        self.assertEqual(len(sq.Runner.load_manifest(out)), 2)
+
     def test_full_run_writes_files_and_manifest(self):
         bus, spec = FakeBus(), FakeSpec()
         out = tempfile.mkdtemp()
