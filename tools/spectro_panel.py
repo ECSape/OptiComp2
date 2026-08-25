@@ -75,6 +75,7 @@ class SpectrometerPanel(ttk.Frame):
         self.btn_live = ttk.Button(ctl2, text="连续读取", command=self.toggle_live)
         self.btn_live.pack(side="left", padx=4)
         ttk.Button(ctl2, text="保存光谱 CSV…", command=self.save_csv).pack(side="left", padx=4)
+        ttk.Button(ctl2, text="自动定标积分时间 (峰值→85%)", command=self.auto_it).pack(side="left", padx=4)
         self.auto_y = tk.BooleanVar(value=True)
         ttk.Checkbutton(ctl2, text="Y 自动缩放", variable=self.auto_y).pack(side="left", padx=8)
         self.stats_var = tk.StringVar(value="")
@@ -194,6 +195,36 @@ class SpectrometerPanel(ttk.Frame):
             else:
                 self.ax.set_ylim(0, bwtek.ADC_MAX * 1.02)
             self.canvas.draw_idle()
+
+    def auto_it(self):
+        """Iterate integration time until the active-region peak sits at ~85 % of full scale."""
+        if not self._need():
+            return
+        avg, sm = self._read_args()
+        spec = self.spec
+
+        def job():
+            it = spec.integration_ms or int(self.it_var.get())
+            for step in range(8):
+                counts = spec.read(1, *sm)
+                active = counts[bwtek.ACTIVE_FIRST:bwtek.ACTIVE_LAST + 1]
+                peak, base = int(active.max()), int(counts.min())
+                self._log("auto-IT step %d: IT %d ms -> peak %d (%.0f%%), baseline %d" % (step, it, peak, 100.0 * peak / bwtek.ADC_MAX, base))
+                if bwtek.peak_in_band(peak):
+                    return it, counts
+                it = bwtek.next_integration_time(it, peak, base)
+                spec.set_integration_time(it)
+            counts = spec.read(1, *sm)
+            return it, counts
+
+        self.state_var.set("自动定标中…")
+        self.worker.submit("spec auto-IT", job, self._auto_it_done)
+
+    def _auto_it_done(self, res):
+        it, counts = res
+        self.it_var.set(str(it))
+        self.state_var.set("已连接, IT %d ms (自动定标)" % it)
+        self._show(counts)
 
     def save_csv(self):
         if self.last is None:

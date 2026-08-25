@@ -128,3 +128,29 @@ def spectrum_stats(counts):
         "saturated_active": int((active >= ADC_MAX).sum()),
         "mean_active": float(active.mean()),
     }
+
+
+# ---- integration-time calibration (thesis 4.2.3.3: set on the reference at its brightest point)
+IT_MIN_MS = 1
+IT_MAX_MS = 60000
+IT_TARGET = 0.85            # aim the peak at 85 % of full scale
+IT_BAND = (0.78, 0.92)      # accept when the peak lands in this band
+
+
+def next_integration_time(current_ms, peak, baseline, target=IT_TARGET):
+    """Linear estimate of the integration time that puts `peak` at target*ADC_MAX.
+
+    Counts above the ADC baseline scale ~linearly with integration time. A saturated
+    frame gives no usable slope, so the time is simply halved.
+    """
+    if peak >= ADC_MAX:
+        return max(IT_MIN_MS, current_ms // 2)
+    signal = float(peak) - float(baseline)
+    if signal < 50:                     # essentially dark: grow aggressively
+        return min(IT_MAX_MS, current_ms * 4)
+    want = target * ADC_MAX - float(baseline)
+    return int(min(IT_MAX_MS, max(IT_MIN_MS, round(current_ms * want / signal))))
+
+
+def peak_in_band(peak, band=IT_BAND):
+    return band[0] * ADC_MAX <= peak <= band[1] * ADC_MAX

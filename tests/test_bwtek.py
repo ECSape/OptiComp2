@@ -89,5 +89,23 @@ class Tests(unittest.TestCase):
             bwtek.BWTek(dll=FakeDll()).read()
 
 
+
+
+class ITCalibrationTests(unittest.TestCase):
+    def test_scales_linearly_towards_target(self):
+        # 1000 ms gave 53030 with baseline 900 -> expect ~ 1000*(0.85*65535-900)/(53030-900)
+        it = bwtek.next_integration_time(1000, 53030, 900)
+        self.assertEqual(it, round(1000 * (0.85 * 65535 - 900) / (53030 - 900)))
+        self.assertTrue(bwtek.peak_in_band(0.85 * 65535))
+
+    def test_saturated_halves(self):
+        self.assertEqual(bwtek.next_integration_time(2000, 65535, 900), 1000)
+
+    def test_dark_grows_and_clamps(self):
+        self.assertEqual(bwtek.next_integration_time(100, 920, 900), 400)
+        self.assertEqual(bwtek.next_integration_time(50000, 920, 900), bwtek.IT_MAX_MS)
+        self.assertEqual(bwtek.next_integration_time(1, 65535, 900), bwtek.IT_MIN_MS)
+
+
 if __name__ == "__main__":
     unittest.main()
