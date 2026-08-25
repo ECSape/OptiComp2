@@ -202,42 +202,46 @@ class Runner(object):
             self._check_abort()
             self.progress(i, n, st)
             self.log("[%d/%d] %s" % (i + 1, n, st.text))
-            p = st.params
-            if st.kind == "stage":
-                self._move(p["addr"], p["deg"])
-            elif st.kind == "shutter":
-                if p["open"]:
-                    self.bus.forward(cfg.SHUTTER)
-                else:
-                    self.bus.backward(cfg.SHUTTER)
-                self.shutter_open = p["open"]
-            elif st.kind == "set_it":
-                if p.get("save"):
-                    self._saved_it = self.spec.integration_ms
-                self.spec.set_integration_time(p["ms"])
-            elif st.kind == "restore_it":
-                if self._saved_it:
-                    self.spec.set_integration_time(self._saved_it)
-                    self.log("integration time restored to %d ms" % self._saved_it)
-                    self._saved_it = None
-            elif st.kind == "auto_it":
-                self.it_candidates.append(self._auto_it())
-            elif st.kind == "apply_min_it":
-                if self.it_candidates:
-                    it = min(self.it_candidates)
-                    self.spec.set_integration_time(it)
-                    self.log("integration time set to %d ms (candidates %s)" % (it, self.it_candidates))
-                    self.it_candidates = []
-            elif st.kind == "acquire":
-                self._acquire(p["tag"], p["avg"], p.get("meta", {}))
-            elif st.kind == "pause":
-                if not self.ask_user(p["msg"]):
-                    raise SequenceAbort("aborted at pause")
-            else:
-                raise ValueError("unknown step kind %s" % st.kind)
+            self.run_step(st)
         self.progress(n, n, None)
         self._write_manifest()
         return self.manifest
+
+    def run_step(self, st):
+        """Execute one step (used by run() and by tools that need single verified actions)."""
+        p = st.params
+        if st.kind == "stage":
+            self._move(p["addr"], p["deg"])
+        elif st.kind == "shutter":
+            if p["open"]:
+                self.bus.forward(cfg.SHUTTER)
+            else:
+                self.bus.backward(cfg.SHUTTER)
+            self.shutter_open = p["open"]
+        elif st.kind == "set_it":
+            if p.get("save"):
+                self._saved_it = self.spec.integration_ms
+            self.spec.set_integration_time(p["ms"])
+        elif st.kind == "restore_it":
+            if self._saved_it:
+                self.spec.set_integration_time(self._saved_it)
+                self.log("integration time restored to %d ms" % self._saved_it)
+                self._saved_it = None
+        elif st.kind == "auto_it":
+            self.it_candidates.append(self._auto_it())
+        elif st.kind == "apply_min_it":
+            if self.it_candidates:
+                it = min(self.it_candidates)
+                self.spec.set_integration_time(it)
+                self.log("integration time set to %d ms (candidates %s)" % (it, self.it_candidates))
+                self.it_candidates = []
+        elif st.kind == "acquire":
+            self._acquire(p["tag"], p["avg"], p.get("meta", {}))
+        elif st.kind == "pause":
+            if not self.ask_user(p["msg"]):
+                raise SequenceAbort("aborted at pause")
+        else:
+            raise ValueError("unknown step kind %s" % st.kind)
 
     def _auto_it(self):
         it = self.spec.integration_ms or 100
