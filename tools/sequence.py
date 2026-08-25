@@ -132,7 +132,7 @@ def build_double_beam(pols, avg, prefix):
 class Runner(object):
     """Executes steps. `ask_user(msg)` must block until the operator confirms (False = abort)."""
 
-    def __init__(self, bus, spec, outdir, log=None, ask_user=None, abort=None, progress=None, ppd=None):
+    def __init__(self, bus, spec, outdir, log=None, ask_user=None, abort=None, progress=None, ppd=None, on_spectrum=None):
         self.bus = bus
         self.spec = spec
         self.outdir = outdir
@@ -144,6 +144,7 @@ class Runner(object):
         self.positions = {}                       # addr -> last known degrees
         self.shutter_open = None
         self.manifest = []
+        self.on_spectrum = on_spectrum or (lambda rec, counts: None)   # live preview hook
         self.it_candidates = []
         self.wl = bwtek.wavelengths()
 
@@ -170,8 +171,21 @@ class Runner(object):
             raise RuntimeError("stage %s reached %.3f° instead of %.3f° – sequence aborted" % (addr, actual, deg))
         return actual
 
+    @staticmethod
+    def load_manifest(outdir):
+        """Records already saved in this session directory (empty list if none)."""
+        path = os.path.join(outdir, "manifest.json")
+        if not os.path.isfile(path):
+            return []
+        try:
+            with open(path, encoding="utf-8") as f:
+                return list(json.load(f).get("spectra", []))
+        except (ValueError, OSError):
+            return []
+
     def run(self, steps):
         os.makedirs(self.outdir, exist_ok=True)
+        self.manifest = self.load_manifest(self.outdir)     # append to earlier runs, never overwrite
         n = len(steps)
         for i, st in enumerate(steps):
             self._check_abort()
@@ -215,6 +229,7 @@ class Runner(object):
             peak = int(counts[bwtek.ACTIVE_FIRST:bwtek.ACTIVE_LAST + 1].max())
             base = int(counts.min())
             self.log("auto-IT %d: %d ms -> peak %d (%.0f%%)" % (k, it, peak, 100.0 * peak / bwtek.ADC_MAX))
+            self.on_spectrum({"tag": "auto-IT %d ms" % it, "integration_ms": it, "peak": peak, "preview_only": True}, counts)
             if bwtek.peak_in_band(peak):
                 return it
             it = bwtek.next_integration_time(it, peak, base)
@@ -236,12 +251,13 @@ class Runner(object):
         np.savetxt(path, np.column_stack([self.wl, counts]), fmt="%.3f,%d", header="wavelength_nm,counts", comments="")
         self.manifest.append(rec)
         self._write_manifest()
+        self.on_spectrum(rec, counts)
         if st["saturated_active"]:
             self.log("WARNING %s: %d saturated pixels in the active region" % (tag, st["saturated_active"]))
         return counts
 
     def _write_manifest(self):
-        with open(os.path.join(self.outdir, "manifest.json"), "w") as f:
+        with open(os.path.join(self.outdir, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump({"created": time.strftime("%Y-%m-%d %H:%M:%S"), "config": {
                 "POL_DEG": cfg.POL_DEG, "SAMPLE_VAR_OFFSET": cfg.SAMPLE_VAR_OFFSET, "SYSTEM_ZERO": cfg.SYSTEM_ZERO,
                 "SYSTEM_DB": cfg.SYSTEM_DB, "SAMPLE_DB": cfg.SAMPLE_DB},

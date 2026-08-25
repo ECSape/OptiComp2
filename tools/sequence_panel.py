@@ -11,6 +11,7 @@ from tkinter import ttk, messagebox
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import sequence as sq
+from hw import bwtek
 from hw import config as cfg
 
 DATA_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -44,12 +45,55 @@ class SequencePanel(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        # ---- bottom row: completed acquisitions (left) + live preview (right)
+        done = ttk.LabelFrame(self, text="已完成的采集 (本会话目录)", padding=6)
+        done.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        cols = ("time", "tag", "theta", "pol", "it", "peak", "sat")
+        self.done_tree = ttk.Treeview(done, columns=cols, show="headings", height=8)
+        for c, w, t in zip(cols, (70, 130, 45, 35, 60, 60, 40), ("时间", "标签", "θ°", "偏振", "IT ms", "峰值%", "饱和")):
+            self.done_tree.heading(c, text=t)
+            self.done_tree.column(c, width=w, anchor="center")
+        sb = ttk.Scrollbar(done, orient="vertical", command=self.done_tree.yview)
+        self.done_tree.configure(yscrollcommand=sb.set)
+        self.done_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.done_frame = done
+        self.done_tags = set()
+
+        prev = ttk.LabelFrame(self, text="实时预览", padding=4)
+        prev.grid(row=1, column=1, sticky="nsew", padx=4, pady=4)
+        self.preview_var = tk.StringVar(value="(尚无数据)")
+        ttk.Label(prev, textvariable=self.preview_var, font=("TkDefaultFont", 9, "bold")).pack(anchor="w")
+        self.canvas = None
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg")
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            self.wl = bwtek.wavelengths()
+            self.fig = Figure(figsize=(5, 2.6), dpi=90)
+            self.ax = self.fig.add_subplot(111)
+            self.ax.set_xlabel("nm", fontsize=8)
+            self.ax.tick_params(labelsize=7)
+            self.ax.axvspan(self.wl[bwtek.ACTIVE_FIRST], self.wl[bwtek.ACTIVE_LAST], color="#e8f4e8", zorder=0)
+            self.ax.axhline(bwtek.ADC_MAX, color="r", lw=0.8, ls="--")
+            (self.line,) = self.ax.plot(self.wl, [0] * len(self.wl), lw=0.8)
+            self.ax.set_xlim(self.wl[0], self.wl[-1])
+            self.ax.set_ylim(0, bwtek.ADC_MAX * 1.02)
+            self.fig.tight_layout()
+            self.canvas = FigureCanvasTkAgg(self.fig, master=prev)
+            self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        except Exception as e:
+            ttk.Label(prev, text="matplotlib 不可用: %s" % e).pack()
 
         f = ttk.LabelFrame(right, text="通用参数", padding=6)
         f.pack(fill="x", pady=2)
         ttk.Label(f, text="会话/样品名").grid(row=0, column=0, sticky="e")
         self.session_var = tk.StringVar(value=time.strftime("session_%Y%m%d_%H%M"))
-        ttk.Entry(f, textvariable=self.session_var, width=28).grid(row=0, column=1, columnspan=3, sticky="w")
+        ttk.Entry(f, textvariable=self.session_var, width=22).grid(row=0, column=1, columnspan=2, sticky="w")
+        ttk.Button(f, text="载入已有记录", command=self.load_history).grid(row=0, column=3, sticky="w")
         ttk.Label(f, text="标签前缀").grid(row=1, column=0, sticky="e")
         self.prefix_var = tk.StringVar(value="sample")
         ttk.Entry(f, textvariable=self.prefix_var, width=12).grid(row=1, column=1, sticky="w")
@@ -187,11 +231,13 @@ class SequencePanel(ttk.Frame):
             messagebox.showwarning("未就绪", "请先在前两页连接串口并初始化光谱仪")
             return
         outdir = os.path.join(DATA_ROOT, self.session_var.get().strip() or time.strftime("session_%Y%m%d_%H%M%S"))
-        if os.path.isdir(outdir) and os.listdir(outdir):
-            if not messagebox.askyesno("目录已存在", "%s 已有数据，同名文件会被覆盖。继续？" % outdir):
-                return
         tags = [s.params["tag"] for s in self.steps if s.kind == "acquire"]
         n_acq = len(tags)
+        existing = sorted(set(t for t in tags if t != "dark") & set(r.get("tag") for r in sq.Runner.load_manifest(outdir)))
+        if existing:
+            if not messagebox.askyesno("已测过", "该会话目录里已有 %d 个同名采集（例如 %s），会被覆盖。\n仍要运行？"
+                                       % (len(existing), ", ".join(existing[:4]))):
+                return
         dups = sorted(set(t for t in tags if tags.count(t) > 1 and t != "dark"))
         if dups:
             if not messagebox.askyesno("重复标签", "队列里有 %d 个标签重复（例如 %s），后一次采集会覆盖前一次的文件。\n"
@@ -228,8 +274,15 @@ class SequencePanel(ttk.Frame):
         def progress(i, n, step):
             self.events.put(("progress", (i, n, step.text if step else "完成")))
 
+        def on_spectrum(rec, counts):
+            self.events.put(("spectrum", (rec, counts)))
+
+        self.load_history(outdir)
+        self._mark_progress(0)
+
         def job():
-            runner = sq.Runner(bus, spec, outdir, log=log, ask_user=ask_user, abort=self.abort, progress=progress, ppd=ppd)
+            runner = sq.Runner(bus, spec, outdir, log=log, ask_user=ask_user, abort=self.abort, progress=progress,
+                               ppd=ppd, on_spectrum=on_spectrum)
             return runner.run(steps)
 
         self.app.spectro.worker.submit("sequence", job, self._done)
@@ -241,6 +294,48 @@ class SequencePanel(ttk.Frame):
     def _done(self, manifest):
         self._finish("完成: %d 个光谱已保存" % len(manifest))
         self.clear()                       # a finished queue must not silently run again
+
+    # ---- progress marks / history / preview ---------------------------------
+    def _mark_progress(self, current):
+        """Rewrite listbox rows: ✓ done, ▶ current, blank pending."""
+        for i, st in enumerate(self.steps):
+            mark = "✓" if i < current else ("▶" if i == current else " ")
+            self.listbox.delete(i)
+            self.listbox.insert(i, "%s %3d  %s" % (mark, i + 1, st.text))
+            self.listbox.itemconfig(i, foreground="#888" if i < current else ("#0a0" if i == current else "#000"))
+        if 0 <= current < len(self.steps):
+            self.listbox.see(current)
+
+    def load_history(self, outdir=None):
+        if outdir is None:
+            outdir = os.path.join(DATA_ROOT, self.session_var.get().strip())
+        recs = sq.Runner.load_manifest(outdir)
+        self.done_tree.delete(*self.done_tree.get_children())
+        self.done_tags = set()
+        for r in recs:
+            self._add_done(r)
+        self.done_frame.config(text="已完成的采集: %s (%d 张)" % (os.path.basename(outdir), len(recs)))
+
+    def _add_done(self, r):
+        theta = r.get("theta")
+        self.done_tree.insert("", "end", values=(
+            r.get("time", "")[11:], r.get("tag", ""), "" if theta is None else "%g" % theta, r.get("pol", ""),
+            r.get("integration_ms", ""), "%.0f" % (100.0 * (r.get("peak") or 0) / bwtek.ADC_MAX),
+            r.get("saturated_active", 0)))
+        self.done_tags.add(r.get("tag"))
+        self.done_tree.yview_moveto(1.0)
+
+    def _show_spectrum(self, rec, counts):
+        if not rec.get("preview_only"):
+            self._add_done(rec)
+            n = len(self.done_tree.get_children())
+            self.done_frame.config(text="已完成的采集: %s (%d 张)" % (os.path.basename(self.session_var.get().strip()), n))
+        peak = int(rec.get("peak") or 0)
+        self.preview_var.set("%s   IT %s ms   峰值 %d (%.0f%%)" % (rec.get("tag"), rec.get("integration_ms"), peak, 100.0 * peak / bwtek.ADC_MAX))
+        if self.canvas:
+            self.line.set_ydata(counts)
+            self.ax.set_ylim(0, max(1000, counts.max() * 1.1))
+            self.canvas.draw_idle()
 
     def _finish(self, text):
         self.running = False
@@ -263,6 +358,9 @@ class SequencePanel(ttk.Frame):
                     i, n, text = payload
                     self.bar["value"] = i
                     self.prog_var.set("%d/%d  %s" % (i, n, text))
+                    self._mark_progress(i)
+                elif kind == "spectrum":
+                    self._show_spectrum(*payload)
                 elif kind == "call":
                     payload()
         except queue.Empty:

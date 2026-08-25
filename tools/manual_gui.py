@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from hw import elliptec as ell
 
 DEFAULT_PORT = "COM4"
-__version__ = "0.4"        # shown in the title bar and log header so the running build is unambiguous
+__version__ = "0.5"        # shown in the title bar and log header so the running build is unambiguous
 
 # Device roles on the OptiComp bus (from stageframework.py + thesis chapter 4).
 DEVICES = [

@@ -101,6 +101,14 @@ class RunnerTests(unittest.TestCase):
         d = np.loadtxt(os.path.join(out, "dark.csv"), delimiter=",", skiprows=1)
         self.assertEqual(d.shape, (2048, 2))
 
+    def test_manifest_appends_across_runs_and_preview_hook(self):
+        out = tempfile.mkdtemp()
+        seen = []
+        sq.Runner(FakeBus(), FakeSpec(), out, on_spectrum=lambda r, c: seen.append(r["tag"])).run(sq.build_dark(1))
+        sq.Runner(FakeBus(), FakeSpec(), out).run(sq.build_single_angle(10, ["S"], 1, "x"))
+        self.assertEqual([m["tag"] for m in sq.Runner.load_manifest(out)], ["dark", "x_S_10"])
+        self.assertEqual(seen, ["dark"])
+
     def test_wrong_angle_aborts(self):
         class StuckBus(FakeBus):
             def move_abs(self, addr, pulses):
