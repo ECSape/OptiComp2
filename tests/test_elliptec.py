@@ -13,6 +13,8 @@ class FakeSerial(object):
 
     def __init__(self, port, baudrate, timeout=None):
         self.port = port
+        self.timeout = timeout
+        self.timeouts_seen = []
         self.script = {}
         self.sent = []
         self.closed = False
@@ -27,6 +29,7 @@ class FakeSerial(object):
 
     def readline(self):
         # Replies for a command are consumed in order; the last one repeats.
+        self.timeouts_seen.append(self.timeout)
         lines = self.script.get(self._last)
         if not lines:
             return b""
@@ -94,6 +97,20 @@ class BusTests(unittest.TestCase):
         })
         self.assertEqual(bus.move_abs("3", 0x11FC7), 0x11FC7)
         self.assertIn(b"3gs", ser.sent)
+
+    def test_motion_uses_long_timeout_and_restores(self):
+        bus, ser = make_bus({b"2ma00004600": [b"2PO00004600\r\n"], b"2gs": [b"2GS00\r\n"]})
+        bus.move_abs("2", 0x4600)
+        self.assertEqual(ser.timeouts_seen[-1], ell.MOTION_TIMEOUT)
+        bus.status("2")
+        self.assertEqual(ser.timeouts_seen[-1], ell.DEFAULT_TIMEOUT)   # restored after the move
+
+    def test_motion_reply_lost_falls_back_to_polling(self):
+        bus, ser = make_bus({b"2ma00004600": [b""],
+                             b"2gs": [b"2GS09\r\n", b"2GS00\r\n"],
+                             b"2gp": [b"2PO00004600\r\n"]})
+        bus.motion_timeout = 0.01
+        self.assertEqual(bus.move_abs("2", 0x4600), 0x4600)
 
     def test_move_error_status_raises(self):
         bus, ser = make_bus({b"2ho0": [b"2GS02\r\n"]})

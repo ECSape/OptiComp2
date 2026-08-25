@@ -16,7 +16,8 @@ import threading
 import time
 
 BAUDRATE = 9600
-DEFAULT_TIMEOUT = 10.0          # seconds to wait for one reply line
+DEFAULT_TIMEOUT = 10.0          # seconds to wait for one reply line (queries)
+MOTION_TIMEOUT = 60.0           # motion commands reply only once the move has finished
 BUSY = 9
 
 STATUS_CODES = {
@@ -126,7 +127,8 @@ def decode_reply(text):
 class ElliptecBus(object):
     """Thread-safe wrapper around one serial port shared by several ELL modules."""
 
-    def __init__(self, port, baudrate=BAUDRATE, timeout=DEFAULT_TIMEOUT, log=None, serial_factory=None):
+    def __init__(self, port, baudrate=BAUDRATE, timeout=DEFAULT_TIMEOUT, motion_timeout=MOTION_TIMEOUT,
+                 log=None, serial_factory=None):
         if serial_factory is None:
             import serial                     # imported lazily so the codec has no hard dependency
             serial_factory = serial.Serial
@@ -134,6 +136,7 @@ class ElliptecBus(object):
         self._lock = threading.RLock()
         self._log = log or (lambda direction, text: None)
         self.port = port
+        self.motion_timeout = motion_timeout
 
     # ---- low level ---------------------------------------------------------
     def close(self):
@@ -143,8 +146,13 @@ class ElliptecBus(object):
             except Exception:
                 pass
 
-    def query(self, addr, cmd, data=""):
-        """Send one command and return the decoded reply (raises on timeout)."""
+    def query(self, addr, cmd, data="", timeout=None):
+        """Send one command and return the decoded reply (raises on timeout).
+
+        `timeout` overrides the port read timeout for this exchange only. Motion commands
+        answer only when the move has finished (an ELL18 at 50 % speed needs ~10 s for
+        100 deg), so they are issued with a long timeout.
+        """
         tx = ("%s%s%s" % (addr, cmd, data)).encode("ascii")
         with self._lock:
             try:
@@ -153,7 +161,13 @@ class ElliptecBus(object):
                 pass
             self._log("TX", tx.decode("ascii"))
             self._ser.write(tx)
-            raw = self._ser.readline()
+            old_timeout = self._ser.timeout
+            if timeout is not None:
+                self._ser.timeout = timeout
+            try:
+                raw = self._ser.readline()
+            finally:
+                self._ser.timeout = old_timeout
         text = raw.decode("ascii", "replace").strip()
         self._log("RX", text if text else "<timeout>")
         if not text:
@@ -188,7 +202,7 @@ class ElliptecBus(object):
 
     def set_velocity(self, addr, percent):
         percent = max(0, min(100, int(percent)))
-        return self._motion_reply(addr, self.query(addr, "sv", "%02X" % percent), expect_position=False)
+        return self._motion_query(addr, "sv", "%02X" % percent, expect_position=False)
 
     # ---- motion ------------------------------------------------------------
     def wait_idle(self, addr, timeout=30.0, poll=0.2):
@@ -201,6 +215,19 @@ class ElliptecBus(object):
             if time.time() - t0 > timeout:
                 raise ElliptecError("module %s still busy after %.0f s" % (addr, timeout))
             time.sleep(poll)
+
+    def _motion_query(self, addr, cmd, data="", expect_position=True):
+        """Issue a motion command with the long timeout and interpret its reply."""
+        try:
+            rep = self.query(addr, cmd, data, timeout=self.motion_timeout)
+        except ReplyTimeout:
+            # Reply lost (e.g. very long move): fall back to polling the status.
+            self._log("--", "no reply within %.0f s, polling status" % self.motion_timeout)
+            code = self.wait_idle(addr, timeout=self.motion_timeout)
+            if code != 0:
+                raise DeviceStatusError(addr, code)
+            return self.position(addr) if expect_position else None
+        return self._motion_reply(addr, rep, expect_position)
 
     def _motion_reply(self, addr, rep, expect_position=True):
         """Interpret the reply to a motion command; returns final position (pulses) or None."""
@@ -216,19 +243,19 @@ class ElliptecBus(object):
         raise ElliptecError("unexpected reply %s" % rep["raw"])
 
     def home(self, addr, direction=0):
-        return self._motion_reply(addr, self.query(addr, "ho", str(direction)))
+        return self._motion_query(addr, "ho", str(direction))
 
     def move_abs(self, addr, pulses):
-        return self._motion_reply(addr, self.query(addr, "ma", hex32(pulses)))
+        return self._motion_query(addr, "ma", hex32(pulses))
 
     def move_rel(self, addr, pulses):
-        return self._motion_reply(addr, self.query(addr, "mr", hex32(pulses)))
+        return self._motion_query(addr, "mr", hex32(pulses))
 
     def forward(self, addr):
-        return self._motion_reply(addr, self.query(addr, "fw"))
+        return self._motion_query(addr, "fw")
 
     def backward(self, addr):
-        return self._motion_reply(addr, self.query(addr, "bw"))
+        return self._motion_query(addr, "bw")
 
 
 class RotationStage(object):

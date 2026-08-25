@@ -157,10 +157,11 @@ class DevicePanel(ttk.LabelFrame):
 
     def motion(self, label, fn):
         self.stat_var.set("状态: 运动中…")
+        self._t0 = time.time()
         self.app.submit("%s %s" % (self.addr, label), lambda: fn(self.addr), self._after_motion)
 
     def _after_motion(self, pulses):
-        self.stat_var.set("状态: 完成")
+        self.stat_var.set("状态: 完成 (%.1f s)" % (time.time() - getattr(self, "_t0", time.time())))
         self._show_position(pulses)
 
     def do_move_abs(self):
@@ -185,6 +186,7 @@ class DevicePanel(ttk.LabelFrame):
             return
         pulses = int(round((deg % 360.0) * self.ppd))
         self.stat_var.set("状态: 运动中… → %.2f°" % deg)
+        self._t0 = time.time()
         self.app.submit("%s ma %.2f°" % (self.addr, deg), lambda: self.app.bus.move_abs(self.addr, pulses), self._after_motion)
 
     def do_move_rel(self):
@@ -199,6 +201,7 @@ class DevicePanel(ttk.LabelFrame):
             return
         pulses = int(round(ddeg * self.ppd))
         self.stat_var.set("状态: 运动中… %+.2f°" % ddeg)
+        self._t0 = time.time()
         self.app.submit("%s mr %+.2f°" % (self.addr, ddeg), lambda: self.app.bus.move_rel(self.addr, pulses), self._after_motion)
 
     def do_set_velocity(self):
@@ -222,7 +225,12 @@ class App(tk.Tk):
         self.worker = HardwareWorker(self.results)
         self.worker.start()
         self.log_lines = []
+        logdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+        os.makedirs(logdir, exist_ok=True)
+        self.autolog_path = os.path.join(logdir, time.strftime("manual_%Y%m%d_%H%M%S.log"))
+        self.autolog = open(self.autolog_path, "a")
         self._build()
+        self._log_line("--- auto log: %s ---" % os.path.abspath(self.autolog_path))
         self.after(100, self._poll_results)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -273,7 +281,7 @@ class App(tk.Tk):
     def connect(self):
         port = self.port_var.get().strip()
         try:
-            self.bus = ell.ElliptecBus(port, timeout=5.0, log=self._log_serial)
+            self.bus = ell.ElliptecBus(port, timeout=5.0, motion_timeout=60.0, log=self._log_serial)
         except Exception as e:
             messagebox.showerror("串口打开失败", "%s\n\n请确认原 OptiComp 程序已关闭（COM 口独占）。" % e)
             return
@@ -346,6 +354,11 @@ class App(tk.Tk):
     def _log_line(self, text):
         line = "%s %s" % (time.strftime("%H:%M:%S"), text)
         self.log_lines.append(line)
+        try:
+            self.autolog.write(line + "\n")
+            self.autolog.flush()
+        except Exception:
+            pass
         self.log.config(state="normal")
         self.log.insert("end", line + "\n")
         self.log.see("end")
