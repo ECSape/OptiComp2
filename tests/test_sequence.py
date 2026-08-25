@@ -98,6 +98,11 @@ class RunnerTests(unittest.TestCase):
         self.assertAlmostEqual(man[1]["sample_deg"], 45 + cfg.SAMPLE_VAR_OFFSET, places=2)   # pulse quantisation
         self.assertEqual(man[0]["integration_ms"], man[1]["integration_ms"])                  # dark at the calibrated IT
         self.assertEqual(len(prompts), 2)
+        # DB spectra at the fixed DB integration time, session integration time restored afterwards
+        self.assertEqual(man[2]["integration_ms"], cfg.DB_IT_MS)
+        self.assertEqual(man[3]["integration_ms"], cfg.DB_IT_MS)
+        self.assertEqual(spec.integration_ms, man[1]["integration_ms"])
+        self.assertNotEqual(spec.integration_ms, cfg.DB_IT_MS)
         with open(os.path.join(out, "manifest.json")) as f:
             self.assertEqual(len(json.load(f)["spectra"]), 4)
         d = np.loadtxt(os.path.join(out, "dark.csv"), delimiter=",", skiprows=1)

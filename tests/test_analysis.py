@@ -90,6 +90,20 @@ class ReflectanceTests(unittest.TestCase):
         res.save_csv(out)
         self.assertEqual(np.loadtxt(out, delimiter=",", skiprows=1).shape, (1777, 3))
 
+    def test_saturated_pixels_are_masked(self):
+        root = tempfile.mkdtemp()
+        lamp = np.full(2048, 10.0)
+        big = lamp.copy()
+        big[1000:1010] = 200.0                                            # clips at 65535 in the sample DB
+        ref = make_session(root, "ref", {("P", 30): lamp}, db={"P": lamp})
+        sam = make_session(root, "sam", {("P", 30): lamp * 0.5}, db={"P": big})
+        res = var.compute_reflectance(var.Session(sam), var.Session(ref), sd.ConstantStandard(1.0), "P")
+        r = res.R[0]
+        self.assertEqual(int(np.isnan(r).sum()), 10)
+        self.assertTrue(np.isnan(r[1000 - 254]))
+        self.assertAlmostEqual(float(np.nanmedian(r)), 0.5, places=6)
+        self.assertTrue(any("masked" in n for n in res.notes))
+
     def test_missing_dark_and_missing_db(self):
         root = tempfile.mkdtemp()
         lamp = np.full(2048, 10.0)

@@ -108,6 +108,9 @@ class DeviceInfo(object):
                    self.travel, self.pulses, self.pulses_per_unit or 0.0))
 
 
+KNOWN_KINDS = ("IN", "GS", "PO", "HO", "GJ", "SJ", "MA", "MR", "GV", "I1", "I2", "BO", "BS", "PS", "SV")
+
+
 def decode_reply(text):
     """Decode one reply line (without CR/LF) into a dict."""
     if len(text) < 3:
@@ -146,6 +149,7 @@ class ElliptecBus(object):
         self.position_tolerance = 20              # pulses (0.05 deg on ELL14/18): 'at target'
         self.accept_tolerance = 120               # pulses (0.3 deg): accept after corrective moves, with a warning
         self.mech_retry_delay = 1.0               # seconds before retrying after GS02
+        self.stray_limit = 3                      # stray / fragmentary lines discarded per query
         self._travel = {}                         # addr -> travel from IN (sliders)
 
     # ---- low level ---------------------------------------------------------
@@ -175,17 +179,27 @@ class ElliptecBus(object):
             if timeout is not None:
                 self._ser.timeout = timeout
             try:
-                raw = self._ser.readline()
+                for _ in range(self.stray_limit + 1):
+                    raw = self._ser.readline()
+                    text = raw.decode("ascii", "replace").strip()
+                    self._log("RX", text if text else "<timeout>")
+                    if not text:
+                        raise ReplyTimeout("no reply from module %s to %s" % (addr, tx.decode("ascii")))
+                    # A module that finished a move sends its PO on its own. When that lands while we
+                    # flush the buffer and send the next poll, a head-truncated fragment ("O00004470")
+                    # or a reply to the previous command is read first: discard it and read the real
+                    # answer to *this* command, which the module sends next.
+                    try:
+                        rep = decode_reply(text)
+                        ok = rep["addr"] == str(addr) and rep["kind"] in KNOWN_KINDS
+                    except (ElliptecError, ValueError):
+                        ok = False
+                    if ok:
+                        return rep
+                    self._log("--", "discarding stray reply %r while talking to %s" % (text, addr))
             finally:
                 self._ser.timeout = old_timeout
-        text = raw.decode("ascii", "replace").strip()
-        self._log("RX", text if text else "<timeout>")
-        if not text:
-            raise ReplyTimeout("no reply from module %s to %s" % (addr, tx.decode("ascii")))
-        rep = decode_reply(text)
-        if rep["addr"] != str(addr):
-            raise ElliptecError("reply from %s while talking to %s: %s" % (rep["addr"], addr, text))
-        return rep
+        raise ElliptecError("no valid reply from module %s to %s (last: %r)" % (addr, tx.decode("ascii"), text))
 
     # ---- queries -----------------------------------------------------------
     def info(self, addr):

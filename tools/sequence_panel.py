@@ -247,8 +247,9 @@ class SequencePanel(ttk.Frame):
         outdir = os.path.join(DATA_ROOT, self.session_var.get().strip() or time.strftime("session_%Y%m%d_%H%M%S"))
         # integration time consistency: a restarted GUI defaults to 100 ms, but the session's
         # spectra must all share one integration time unless the queue sets it explicitly
-        first_acq = next((i for i, s in enumerate(self.steps) if s.kind == "acquire"), None)
-        sets_it = any(s.kind in ("set_it", "auto_it", "apply_min_it") for s in self.steps[:first_acq]) if first_acq is not None else True
+        first_acq = next((i for i, s in enumerate(self.steps) if s.kind == "acquire" and s.params.get("meta", {}).get("kind") == "var"), None)
+        sets_it = any((s.kind == "set_it" and not s.params.get("save")) or s.kind in ("auto_it", "apply_min_it")
+                      for s in self.steps[:first_acq]) if first_acq is not None else True
         session_its = [r["integration_ms"] for r in sq.Runner.load_manifest(outdir) if r.get("kind") == "var"]
         if first_acq is not None and not sets_it and session_its:
             session_it = max(set(session_its), key=session_its.count)

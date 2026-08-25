@@ -170,6 +170,27 @@ class BusTests(unittest.TestCase):
         self.assertEqual(ser.sent.count(b"2ma00004473"), 1)
         self.assertNotIn(b"2gp", ser.sent[1:])                 # position came from the PO, no extra gp
 
+    def test_truncated_late_po_fragment_is_discarded(self):
+        # real-bus case 2026-08-25 21:53: the completion PO of module 2 arrived while the input buffer
+        # was being flushed for the next `gs` poll -> "O00004470" read, then the real GS answer
+        bus, ser = make_bus({b"2ma00004472": [b""], b"2gs": [b"", b"O00004470\r\n", b"2GS00\r\n"],
+                             b"2gp": [b"2PO0000E8DD\r\n", b"2PO00004472\r\n"]})
+        bus.first_wait = 0.01
+        bus.poll_timeout = 0.01
+        bus.poll_interval = 0
+        self.assertEqual(bus.move_abs("2", 0x4472), 0x4472)
+        self.assertEqual(ser.sent.count(b"2ma00004472"), 1)
+
+    def test_stray_reply_from_other_module_is_discarded(self):
+        bus, ser = make_bus({b"3gs": [b"2PO00004470\r\n", b"3GS00\r\n"]})
+        self.assertEqual(bus.status("3"), 0)
+
+    def test_only_stray_replies_raises(self):
+        bus, ser = make_bus({b"3gs": [b"2PO00004470\r\n"]})
+        with self.assertRaises(ell.ElliptecError):
+            bus.status("3")
+        self.assertEqual(len(ser.timeouts_seen), bus.stray_limit + 1)
+
     def test_mechanical_timeout_retried_once(self):
         bus, ser = make_bus({b"3ma00011FC7": [b"3GS02\r\n", b"3PO00011FC7\r\n"], b"3gp": [b"3PO00011E7D\r\n"]})
         bus.mech_retry_delay = 0

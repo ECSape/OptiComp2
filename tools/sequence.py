@@ -51,8 +51,13 @@ def shutter(open_):
     return Step("shutter", "快门 %s" % ("开" if open_ else "关"), open=bool(open_))
 
 
-def set_it(ms):
-    return Step("set_it", "积分时间 %d ms" % ms, ms=int(ms))
+def set_it(ms, save=False):
+    """Set the integration time; with save=True the previous value is remembered for restore_it()."""
+    return Step("set_it", "积分时间 %d ms" % ms, ms=int(ms), save=bool(save))
+
+
+def restore_it():
+    return Step("restore_it", "恢复积分时间")
 
 
 def auto_it():
@@ -115,13 +120,14 @@ def build_scan(start, stop, step, pols, avg, prefix):
 
 def build_double_beam(pols, avg, prefix):
     """Exchange position -> user swaps port cover -> DB geometry -> acquire per polarisation."""
-    steps = [shutter(False),
+    steps = [shutter(False), set_it(cfg.DB_IT_MS, save=True),
              stage(cfg.SAMPLE, cfg.SAMPLE_EXCHANGE, "样品台交换位"), stage(cfg.SYSTEM, cfg.SYSTEM_EXCHANGE, "探测臂交换位"),
              pause("请把积分球端口盖换到 DB（直射）位置，然后点确定"),
              stage(cfg.SYSTEM, cfg.SYSTEM_DB, "探测臂 DB 位"), stage(cfg.SAMPLE, cfg.SAMPLE_DB, "样品台 DB 位")]
     for pol in pols:
         steps += [polariser(pol), shutter(True), acquire("%s_DB_%s" % (prefix, pol), avg, kind="db", pol=pol)]
-    steps += [shutter(False), acquire("dark_db", avg, kind="dark")]        # dark at the DB integration time
+    steps += [shutter(False), acquire("dark_db", avg, kind="dark"),        # dark at the DB integration time
+              restore_it()]                                                # back to the session integration time
     steps += [
               stage(cfg.SAMPLE, cfg.SAMPLE_EXCHANGE, "样品台交换位"), stage(cfg.SYSTEM, cfg.SYSTEM_EXCHANGE, "探测臂交换位"),
               pause("请把端口盖换回正常测量位置，然后点确定"),
@@ -147,6 +153,7 @@ class Runner(object):
         self.manifest = []
         self.on_spectrum = on_spectrum or (lambda rec, counts: None)   # live preview hook
         self.it_candidates = []
+        self._saved_it = None
         self.wl = bwtek.wavelengths()
 
     def _check_abort(self):
@@ -205,7 +212,14 @@ class Runner(object):
                     self.bus.backward(cfg.SHUTTER)
                 self.shutter_open = p["open"]
             elif st.kind == "set_it":
+                if p.get("save"):
+                    self._saved_it = self.spec.integration_ms
                 self.spec.set_integration_time(p["ms"])
+            elif st.kind == "restore_it":
+                if self._saved_it:
+                    self.spec.set_integration_time(self._saved_it)
+                    self.log("integration time restored to %d ms" % self._saved_it)
+                    self._saved_it = None
             elif st.kind == "auto_it":
                 self.it_candidates.append(self._auto_it())
             elif st.kind == "apply_min_it":

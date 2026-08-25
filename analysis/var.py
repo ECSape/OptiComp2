@@ -59,7 +59,9 @@ class Session(object):
 
     def net(self, rec, per_ms=False):
         """Dark-subtracted counts on the active pixels; optionally per millisecond."""
-        s = self.counts(rec)[ACTIVE] - self.counts(self.dark_for(rec))[ACTIVE]
+        raw = self.counts(rec)[ACTIVE]
+        s = raw - self.counts(self.dark_for(rec))[ACTIVE]
+        s[raw >= bwtek.ADC_MAX] = np.nan                       # clipped pixels carry no information
         return s / rec["integration_ms"] if per_ms else s
 
     def thetas(self, pol):
@@ -118,6 +120,9 @@ def compute_reflectance(sample, reference, standard, pol, use_db=True, thetas=No
         if per_ms:
             notes.append("DB spectra use different integration times (%s vs %s ms): normalised per ms" % (dbx["integration_ms"], dby["integration_ms"]))
         db_factor = reference.net(dby, per_ms) / sample.net(dbx, per_ms)
+        n_bad = int(np.isnan(db_factor).sum())
+        if n_bad:
+            notes.append("DB spectra: %d saturated pixels masked (NaN)" % n_bad)
     elif use_db:
         notes.append("no double-beam spectra in %s -> substitution correction skipped" % ("both" if dbx is None and dby is None else ("sample" if dbx is None else "reference")))
     R = np.zeros((len(thetas), len(wl)))
@@ -127,7 +132,7 @@ def compute_reflectance(sample, reference, standard, pol, use_db=True, thetas=No
         if per_ms and i == 0:
             notes.append("sample/reference integration times differ (%s vs %s ms): normalised per ms" % (rx["integration_ms"], ry["integration_ms"]))
         if sample.saturated(rx) or reference.saturated(ry):
-            notes.append("theta %g: saturated pixels present" % th)
+            notes.append("theta %g: saturated pixels masked (NaN)" % th)
         with np.errstate(divide="ignore", invalid="ignore"):
             R[i] = sample.net(rx, per_ms) / reference.net(ry, per_ms) * db_factor * standard.reflectance(wl, th, pol)
     return Result(wl, thetas, R, pol, notes, standard.valid_mask(wl))

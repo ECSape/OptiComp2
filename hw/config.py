@@ -14,6 +14,7 @@ SAMPLE = "3"          # upper stage
 POL_DEG = {"P": 146.0, "S": 236.0}
 
 SYSTEM_ZERO = 44.0
+DB_IT_MS = 1000               # double-beam spectra always at this integration time (thesis: 1000 ms)
 SYSTEM_DB = 124.0
 SYSTEM_EXCHANGE = 150.0
 
