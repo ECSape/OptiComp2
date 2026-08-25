@@ -61,6 +61,7 @@ class SpectrometerPanel(ttk.Frame):
 
         ttk.Label(ctl, text="积分时间 ms").pack(side="left", padx=(16, 2))
         self.it_var = tk.StringVar(value="100")
+        self.it_chosen = False          # True once the user / a sequence set the integration time deliberately
         ttk.Entry(ctl, textvariable=self.it_var, width=8).pack(side="left")
         ttk.Button(ctl, text="设置", command=self.set_it).pack(side="left", padx=4)
         ttk.Label(ctl, text="平均").pack(side="left", padx=(12, 2))
@@ -152,6 +153,7 @@ class SpectrometerPanel(ttk.Frame):
         except ValueError:
             messagebox.showerror("输入错误", "积分时间需为整数毫秒")
             return
+        self.it_chosen = True
         self.worker.submit("spec set IT", lambda: self.spec.set_integration_time(ms),
                            lambda r: self.state_var.set("已连接, IT %d ms" % r))
 
@@ -228,6 +230,7 @@ class SpectrometerPanel(ttk.Frame):
 
     def _auto_it_done(self, res):
         it, counts = res
+        self.it_chosen = True
         self.it_var.set(str(it))
         self.state_var.set("已连接, IT %d ms (自动定标)" % it)
         self._show(counts)

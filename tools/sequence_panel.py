@@ -22,6 +22,7 @@ class SequencePanel(ttk.Frame):
         ttk.Frame.__init__(self, master, padding=6)
         self.app = app
         self.steps = []
+        self.job_steps = []
         self.events = queue.Queue()
         self.abort = threading.Event()
         self.running = False
@@ -251,6 +252,22 @@ class SequencePanel(ttk.Frame):
         sets_it = any((s.kind == "set_it" and not s.params.get("save")) or s.kind in ("auto_it", "apply_min_it")
                       for s in self.steps[:first_acq]) if first_acq is not None else True
         session_its = [r["integration_ms"] for r in sq.Runner.load_manifest(outdir) if r.get("kind") == "var"]
+        if first_acq is not None and not sets_it and not session_its and not self.app.spectro.it_chosen:
+            # new session, GUI restarted, nothing set the integration time yet -> offer the last one used anywhere
+            last = self._last_session_it()
+            hint = ("最近的会话 %s 用的是 %d ms。是否在队列开头插入『积分时间 %d ms』？\n（选否则按 %s ms 采集，取消则不运行）"
+                    % (last[0], last[1], last[1], self.app.spectro.spec.integration_ms)) if last else "请先在光谱仪页设置/定标积分时间，或在队列前加①。"
+            if last:
+                ans = messagebox.askyesnocancel("积分时间未设置", "GUI 启动后尚未设置积分时间（当前 %s ms，默认值）。\n\n%s"
+                                                % (self.app.spectro.spec.integration_ms, hint))
+                if ans is None:
+                    return
+                if ans:
+                    self.steps.insert(0, sq.set_it(last[1]))
+                    self._refresh()
+            else:
+                messagebox.showwarning("积分时间未设置", "GUI 启动后尚未设置积分时间（当前 %s ms，默认值）。\n%s" % (self.app.spectro.spec.integration_ms, hint))
+                return
         if first_acq is not None and not sets_it and session_its:
             session_it = max(set(session_its), key=session_its.count)
             current = self.app.spectro.spec.integration_ms
@@ -284,6 +301,7 @@ class SequencePanel(ttk.Frame):
         self.btn_abort.config(state="normal")
         self.bar["maximum"] = len(self.steps)
         steps = list(self.steps)
+        self.job_steps = steps
         bus, spec = self.app.bus, self.app.spectro.spec
         ppd = {p.addr: p.ppd for p in self.app.panels if p.ppd}
 
@@ -367,8 +385,22 @@ class SequencePanel(ttk.Frame):
             self.ax.set_ylim(0, max(1000, counts.max() * 1.1))
             self.canvas.draw_idle()
 
+    def _last_session_it(self):
+        """(session name, integration_ms) of the most recent VAR spectrum in any session, or None."""
+        best = None
+        try:
+            for name in os.listdir(DATA_ROOT):
+                for r in sq.Runner.load_manifest(os.path.join(DATA_ROOT, name)):
+                    if r.get("kind") == "var" and (best is None or r.get("time", "") > best[2]):
+                        best = (name, int(r["integration_ms"]), r.get("time", ""))
+        except OSError:
+            pass
+        return best[:2] if best else None
+
     def _finish(self, text):
         self.running = False
+        if any(s.kind in ("set_it", "auto_it", "apply_min_it") for s in self.job_steps):
+            self.app.spectro.it_chosen = True
         self.app.sequence_running = False
         self.btn_run.config(state="normal")
         self.btn_abort.config(state="disabled")
