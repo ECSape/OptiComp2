@@ -21,7 +21,7 @@ from hw import elliptec as ell
 from hw import config as cfg
 
 DEFAULT_PORT = "COM4"
-__version__ = "0.16"        # shown in the title bar and log header so the running build is unambiguous
+__version__ = "0.17"        # shown in the title bar and log header so the running build is unambiguous
 
 # Device roles on the OptiComp bus (from stageframework.py + thesis chapter 4).
 DEVICES = [

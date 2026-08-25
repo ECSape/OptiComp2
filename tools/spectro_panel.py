@@ -77,6 +77,9 @@ class SpectrometerPanel(ttk.Frame):
         self.btn_live.pack(side="left", padx=4)
         ttk.Button(ctl2, text="保存光谱 CSV…", command=self.save_csv).pack(side="left", padx=4)
         ttk.Button(ctl2, text="自动定标积分时间 (峰值→85%)", command=self.auto_it).pack(side="left", padx=4)
+        self.btn_mon = ttk.Button(ctl2, text="监视记录", command=self.toggle_monitor)
+        self.btn_mon.pack(side="left", padx=4)
+        self.mon = None                   # stability monitor state (see toggle_monitor)
         self.auto_y = tk.BooleanVar(value=True)
         ttk.Checkbutton(ctl2, text="Y 自动缩放", variable=self.auto_y).pack(side="left", padx=8)
         self.stats_var = tk.StringVar(value="")
@@ -128,6 +131,7 @@ class SpectrometerPanel(ttk.Frame):
             messagebox.showwarning("序列运行中", "请先中止序列")
             return
         self.worker.live.clear()
+        self._stop_monitor()
         if self.spec:
             s = self.spec
             self.spec = None
@@ -190,11 +194,71 @@ class SpectrometerPanel(ttk.Frame):
         if self.worker.live.is_set():
             self.after(50, self._live_step)
 
+    # ---- stability monitor -------------------------------------------------
+    MON_BANDS = ((450, 550), (600, 700), (800, 900))
+
+    def toggle_monitor(self):
+        """Continuous reads with every spectrum's peak / band means appended to a CSV.
+
+        Used to look for illumination or detection drift: leave the sample, shutter and stages
+        untouched and watch the relative change against the first frame.
+        """
+        if self.mon:
+            self._stop_monitor()
+            return
+        if not self._need():
+            return
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "monitor")
+        os.makedirs(root, exist_ok=True)
+        path = os.path.join(root, time.strftime("monitor_%Y%m%d_%H%M%S.csv"))
+        fh = open(path, "w")
+        fh.write("time,elapsed_s,peak,baseline," + ",".join("mean_%d_%d" % b for b in self.MON_BANDS) + "\n")
+        self.mon = {"path": path, "fh": fh, "t0": time.time(), "n": 0, "first": None}
+        self.btn_mon.config(text="停止监视")
+        self.app._log_line("SPEC monitor start -> %s (IT %s ms)" % (path, self.spec.integration_ms))
+        if not self.worker.live.is_set():
+            self.toggle_live()
+
+    def _stop_monitor(self):
+        if not self.mon:
+            return
+        m = self.mon
+        self.mon = None
+        try:
+            m["fh"].close()
+        except Exception:
+            pass
+        self.btn_mon.config(text="监视记录")
+        self.app._log_line("SPEC monitor stop: %d frames, %.0f s -> %s" % (m["n"], time.time() - m["t0"], m["path"]))
+        if self.worker.live.is_set():
+            self.toggle_live()
+
+    def _monitor_frame(self, counts, st):
+        m = self.mon
+        active = counts[bwtek.ACTIVE_FIRST:bwtek.ACTIVE_LAST + 1].astype(float)
+        wl = self.wl[bwtek.ACTIVE_FIRST:bwtek.ACTIVE_LAST + 1]
+        base = float(np.percentile(counts[:bwtek.ACTIVE_FIRST], 50))          # masked pixels ~ dark level
+        means = [float(np.mean(active[(wl >= a) & (wl < b)])) - base for a, b in self.MON_BANDS]
+        el = time.time() - m["t0"]
+        m["fh"].write("%s,%.1f,%d,%.0f,%s\n" % (time.strftime("%H:%M:%S"), el, st["max"], base, ",".join("%.1f" % v for v in means)))
+        m["fh"].flush()
+        if m["first"] is None:
+            m["first"] = means
+        rel = ["%+.1f%%" % (100.0 * (v / f - 1.0) if f else 0.0) for v, f in zip(means, m["first"])]
+        m["n"] += 1
+        txt = "监视 #%d  %.0f s  相对首帧 450-550/600-700/800-900: %s" % (m["n"], el, " / ".join(rel))
+        if m["n"] == 1 or m["n"] % 10 == 0:
+            self.app._log_line("SPEC monitor #%d t=%.0fs peak=%d base=%.0f bands=%s rel=%s"
+                               % (m["n"], el, st["max"], base, ["%.0f" % v for v in means], rel))
+        return txt
+
     def _show(self, counts):
         self.last = counts
         st = bwtek.spectrum_stats(counts)
         txt = "峰值 %d @ %.1f nm   饱和像素 %d (有效区 %d)   有效区均值 %.0f" % (
             st["max"], self.wl[st["argmax"]], st["saturated"], st["saturated_active"], st["mean_active"])
+        if self.mon:
+            txt = self._monitor_frame(counts, st) + "   |   " + txt
         self.stats_var.set(txt)
         if self.canvas:
             self.line.set_ydata(counts)
@@ -270,6 +334,7 @@ class SpectrometerPanel(ttk.Frame):
 
     def shutdown(self):
         self.worker.live.clear()
+        self._stop_monitor()
         if self.spec:
             try:
                 self.spec.close()
