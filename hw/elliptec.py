@@ -317,6 +317,21 @@ class ElliptecBus(object):
             raise ElliptecError("module %s stopped at %d pulses, target %d (cmd %s%s)" % (addr, pos, target, tx_cmd, tx_data))
         raise ElliptecError("module %s ignored %s%s %d times" % (addr, cmd, data, self.attempts))
 
+    def _motion_reply(self, addr, rep, expect_position=True):
+        """Interpret the direct reply to a motion command; returns final position (pulses) or None."""
+        if rep["kind"] == "PO":
+            return rep["value"]
+        if rep["kind"] == "GS":
+            code, pos = rep["code"], None
+            if code == BUSY:
+                code, pos = self._poll_until_idle(addr)
+            if code != 0:
+                raise DeviceStatusError(addr, code)
+            if not expect_position:
+                return None
+            return pos if pos is not None else self.position(addr)
+        raise ElliptecError("unexpected reply %s" % rep["raw"])
+
     def home(self, addr, direction=0):
         return self._motion_query(addr, "ho", str(direction), target=0)
 
