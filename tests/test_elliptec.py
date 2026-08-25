@@ -155,6 +155,21 @@ class BusTests(unittest.TestCase):
         self.assertEqual(bus.move_abs("3", 0x11FC7), 0x11FC7)
         self.assertEqual(ser.sent.count(b"3ma00011FC7"), 2)
 
+    def test_sensor_error_at_target_is_accepted(self):
+        # real-bus case: GS0A after a long move, but gp shows the stage at the target
+        bus, ser = make_bus({b"2ma0000E955": [b"", b"2PO0000E948\r\n"], b"2gs": [b"", b"2GS0A\r\n"],
+                             b"2gp": [b"2PO0000446B\r\n", b"2PO0000E948\r\n"]})
+        bus.first_wait = bus.poll_timeout = 0.01
+        bus.poll_interval = 0
+        self.assertEqual(bus.move_abs("2", 0xE955), 0xE948)
+        self.assertEqual(ser.sent.count(b"2ma0000E955"), 1)
+
+    def test_sensor_error_off_target_raises(self):
+        bus, ser = make_bus({b"2ma0000E955": [b"2GS0A\r\n"], b"2gp": [b"2PO0000446B\r\n"]})
+        with self.assertRaises(ell.DeviceStatusError) as cm:
+            bus.move_abs("2", 0xE955)
+        self.assertEqual(cm.exception.code, 0x0A)
+
     def test_mechanical_timeout_twice_raises(self):
         bus, ser = make_bus({b"3ma00011FC7": [b"3GS02\r\n"], b"3gp": [b"3PO00011E7D\r\n"]})
         bus.mech_retry_delay = 0

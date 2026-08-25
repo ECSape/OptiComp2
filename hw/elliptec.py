@@ -252,6 +252,19 @@ class ElliptecBus(object):
         try:
             return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved)
         except DeviceStatusError as e:
+            if e.code == BUSY:
+                raise
+            # Observed 2026-08-25: ELL18 reported GS0A (sensor error) at the end of a 106 deg
+            # move that had in fact reached its target. A status code with the stage at the
+            # commanded position is logged, not fatal.
+            if expect_position and target is not None:
+                try:
+                    pos = self.position(addr)
+                except ElliptecError:
+                    pos = None
+                if pos is not None and abs(pos - target) <= self.position_tolerance:
+                    self._log("--", "module %s reported GS %02X (%s) but is at target %d; accepted" % (addr, e.code, STATUS_CODES.get(e.code, "?"), pos))
+                    return pos
             if e.code != MECHANICAL_TIMEOUT:
                 raise
             self._log("--", "module %s mechanical time-out on %s%s, retrying once after %.0f s" % (addr, cmd, data, self.mech_retry_delay))
