@@ -93,27 +93,61 @@ class BusTests(unittest.TestCase):
         bus, ser = make_bus({
             b"3ma00011FC7": [b"3GS09\r\n"],
             b"3gs": [b"3GS09\r\n", b"3GS00\r\n"],
-            b"3gp": [b"3PO00011FC7\r\n"],
+            b"3gp": [b"3PO00000000\r\n", b"3PO00011FC7\r\n"],
         })
         self.assertEqual(bus.move_abs("3", 0x11FC7), 0x11FC7)
         self.assertIn(b"3gs", ser.sent)
 
+    def test_swallowed_command_is_resent(self):
+        # real-bus case 2026-08-25: no reply, no motion, GS00 -> resend; second attempt works
+        bus, ser = make_bus({
+            b"3ma0000FA72": [b"", b"3PO0000FA72\r\n"],
+            b"3gs": [b"3GS00\r\n"],
+            b"3gp": [b"3PO0000F438\r\n", b"3PO0000F438\r\n"],
+        })
+        bus.first_wait = 0.01
+        bus.poll_interval = 0
+        self.assertEqual(bus.move_abs("3", 0xFA72), 0xFA72)
+        self.assertEqual(ser.sent.count(b"3ma0000FA72"), 2)
+
+    def test_swallowed_command_gives_up_after_attempts(self):
+        bus, ser = make_bus({b"3ma0000FA72": [b""], b"3gs": [b"3GS00\r\n"], b"3gp": [b"3PO0000F438\r\n"]})
+        bus.first_wait = 0.01
+        bus.poll_interval = 0
+        with self.assertRaises(ell.ElliptecError):
+            bus.move_abs("3", 0xFA72)
+        self.assertEqual(ser.sent.count(b"3ma0000FA72"), 3)
+
+    def test_wrong_final_position_raises(self):
+        bus, ser = make_bus({b"3ma0000FA72": [b"3PO0000F438\r\n"], b"3gp": [b"3PO0000F438\r\n"]})
+        with self.assertRaises(ell.ElliptecError):
+            bus.move_abs("3", 0xFA72)
+
+    def test_lost_reply_but_move_completed(self):
+        bus, ser = make_bus({b"3ma0000FA72": [b""], b"3gs": [b"", b"3GS09\r\n", b"3GS00\r\n"],
+                             b"3gp": [b"3PO0000F438\r\n", b"3PO0000FA70\r\n"]})
+        bus.first_wait = 0.01
+        bus.poll_timeout = 0.01
+        bus.poll_interval = 0
+        self.assertEqual(bus.move_abs("3", 0xFA72), 0xFA70)          # within tolerance
+        self.assertEqual(ser.sent.count(b"3ma0000FA72"), 1)
+
     def test_motion_uses_long_timeout_and_restores(self):
-        bus, ser = make_bus({b"2ma00004600": [b"2PO00004600\r\n"], b"2gs": [b"2GS00\r\n"]})
+        bus, ser = make_bus({b"2ma00004600": [b"2PO00004600\r\n"], b"2gs": [b"2GS00\r\n"], b"2gp": [b"2PO00000000\r\n"]})
         bus.move_abs("2", 0x4600)
-        self.assertEqual(ser.timeouts_seen[-1], ell.MOTION_TIMEOUT)
+        self.assertEqual(ser.timeouts_seen[-1], ell.FIRST_WAIT)
         bus.status("2")
         self.assertEqual(ser.timeouts_seen[-1], ell.DEFAULT_TIMEOUT)   # restored after the move
 
-    def test_motion_reply_lost_falls_back_to_polling(self):
-        bus, ser = make_bus({b"2ma00004600": [b""],
-                             b"2gs": [b"2GS09\r\n", b"2GS00\r\n"],
-                             b"2gp": [b"2PO00004600\r\n"]})
-        bus.motion_timeout = 0.01
-        self.assertEqual(bus.move_abs("2", 0x4600), 0x4600)
+    def test_shutter_no_move_is_not_retried(self):
+        bus, ser = make_bus({b"0fw": [b""], b"0gs": [b"0GS00\r\n"], b"0gp": [b"0PO0000001F\r\n"]})
+        bus.first_wait = 0.01
+        bus.poll_interval = 0
+        self.assertEqual(bus.forward("0"), 0x1F)
+        self.assertEqual(ser.sent.count(b"0fw"), 1)
 
     def test_move_error_status_raises(self):
-        bus, ser = make_bus({b"2ho0": [b"2GS02\r\n"]})
+        bus, ser = make_bus({b"2ho0": [b"2GS02\r\n"], b"2gp": [b"2PO00000100\r\n"]})
         with self.assertRaises(ell.DeviceStatusError) as cm:
             bus.home("2")
         self.assertEqual(cm.exception.code, 2)
@@ -126,7 +160,7 @@ class BusTests(unittest.TestCase):
     def test_rotation_stage_degrees(self):
         bus, ser = make_bus({b"3in": [IN_REPLY.replace(b"0IN", b"3IN")],
                              b"3ma00011FC7": [b"3PO00011FC7\r\n"],
-                             b"3gp": [b"3PO00011FC7\r\n"]})
+                             b"3gp": [b"3PO00000000\r\n", b"3PO00011FC7\r\n"]})
         st = ell.RotationStage(bus, "3")
         self.assertEqual(st.deg_to_pulses(185), 0x11FC7)       # same value the original code sent
         self.assertAlmostEqual(st.move_deg(185), 185.0, places=2)

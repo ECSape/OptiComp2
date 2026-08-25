@@ -77,7 +77,7 @@ class BuilderTests(unittest.TestCase):
         smp = [s for s in steps if s.params.get("addr") == cfg.SAMPLE][0]
         self.assertEqual(pol.params["deg"], cfg.POL_DEG["S"])
         self.assertEqual(smp.params["deg"], 80 + cfg.SAMPLE_VAR_OFFSET)
-        self.assertEqual(steps[-1].kind, "auto_it")
+        self.assertEqual([s.kind for s in steps[-5:]], ["stage", "auto_it", "stage", "auto_it", "apply_min_it"])
 
 
 class RunnerTests(unittest.TestCase):
@@ -100,6 +100,13 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(len(json.load(f)["spectra"]), 3)
         d = np.loadtxt(os.path.join(out, "dark.csv"), delimiter=",", skiprows=1)
         self.assertEqual(d.shape, (2048, 2))
+
+    def test_wrong_angle_aborts(self):
+        class StuckBus(FakeBus):
+            def move_abs(self, addr, pulses):
+                return pulses - 1000
+        with self.assertRaises(RuntimeError):
+            sq.Runner(StuckBus(), FakeSpec(), tempfile.mkdtemp()).run([sq.sample_theta(45)])
 
     def test_soft_limit_and_abort(self):
         bus, spec = FakeBus(), FakeSpec()

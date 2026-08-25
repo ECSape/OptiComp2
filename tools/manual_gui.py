@@ -229,7 +229,7 @@ class App(tk.Tk):
         logdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
         os.makedirs(logdir, exist_ok=True)
         self.autolog_path = os.path.join(logdir, time.strftime("manual_%Y%m%d_%H%M%S.log"))
-        self.autolog = open(self.autolog_path, "a")
+        self.autolog = open(self.autolog_path, "a", encoding="utf-8")
         self._build()
         self._log_line("--- auto log: %s ---" % os.path.abspath(self.autolog_path))
         self.after(100, self._poll_results)
@@ -391,7 +391,7 @@ class App(tk.Tk):
     def save_log(self):
         path = filedialog.asksaveasfilename(defaultextension=".log", initialfile=time.strftime("manual_%Y%m%d_%H%M%S.log"))
         if path:
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(self.log_lines) + "\n")
 
     def _on_close(self):

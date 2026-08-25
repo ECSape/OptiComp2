@@ -76,10 +76,17 @@ def check_theta_range(start, stop, step):
     return list(np.arange(start, stop + 1e-9, step))
 
 
+def apply_min_it():
+    return Step("apply_min_it", "取 S/P 定标结果中较小的积分时间")
+
+
 def build_reference_calibration():
-    """Thesis 4.2.3.3: integration time set on the reference at 80° / S (brightest point)."""
-    return [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂零位"), polariser("S"), sample_theta(cfg.THETA_MAX),
-            shutter(True), auto_it()]
+    """Thesis 4.2.3.3 sets the integration time on the reference at 80° / S (its brightest
+    point for specular dielectrics). Measured 2026-08-25 on a diffuse reference the P
+    channel was 12 % brighter, so both polarisations are calibrated and the smaller
+    integration time is kept."""
+    return [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂零位"), sample_theta(cfg.THETA_MAX), shutter(True),
+            polariser("S"), auto_it(), polariser("P"), auto_it(), apply_min_it()]
 
 
 def build_dark(avg, tag="dark"):
@@ -137,6 +144,7 @@ class Runner(object):
         self.positions = {}                       # addr -> last known degrees
         self.shutter_open = None
         self.manifest = []
+        self.it_candidates = []
         self.wl = bwtek.wavelengths()
 
     def _check_abort(self):
@@ -158,7 +166,8 @@ class Runner(object):
         actual = (pulses / ppd) % 360.0
         self.positions[addr] = actual
         if abs(((actual - deg + 180) % 360) - 180) > 0.05:
-            self.log("WARNING stage %s reached %.3f° instead of %.3f°" % (addr, actual, deg))
+            # the bus layer already retried; a wrong angle must abort, never be measured
+            raise RuntimeError("stage %s reached %.3f° instead of %.3f° – sequence aborted" % (addr, actual, deg))
         return actual
 
     def run(self, steps):
@@ -180,7 +189,13 @@ class Runner(object):
             elif st.kind == "set_it":
                 self.spec.set_integration_time(p["ms"])
             elif st.kind == "auto_it":
-                self._auto_it()
+                self.it_candidates.append(self._auto_it())
+            elif st.kind == "apply_min_it":
+                if self.it_candidates:
+                    it = min(self.it_candidates)
+                    self.spec.set_integration_time(it)
+                    self.log("integration time set to %d ms (candidates %s)" % (it, self.it_candidates))
+                    self.it_candidates = []
             elif st.kind == "acquire":
                 self._acquire(p["tag"], p["avg"], p.get("meta", {}))
             elif st.kind == "pause":
