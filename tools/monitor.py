@@ -28,15 +28,23 @@ POL_DEG = {"S": cfg.POL_DEG["S"], "P": cfg.POL_DEG["P"]}
 
 
 class Log(object):
-    def __init__(self, path):
+    """File logger; echoes to stdout only when asked (a detached process with a redirected stdout
+    and no reader blocks forever on print once the pipe fills - seen 2026-08-26)."""
+
+    def __init__(self, path, echo=True):
         self.fh = open(path, "a", encoding="utf-8")
+        self.echo = echo
 
     def __call__(self, text):
         line = "%s %s" % (time.strftime("%H:%M:%S"), text)
-        print(line)
-        sys.stdout.flush()
         self.fh.write(line + "\n")
         self.fh.flush()
+        if self.echo:
+            try:
+                print(line)
+                sys.stdout.flush()
+            except Exception:
+                self.echo = False
 
     def bus(self, direction, text):          # ElliptecBus log signature
         self("%s %s" % (direction, text))
@@ -103,13 +111,14 @@ def main(argv=None):
     ap.add_argument("--port", default="COM4")
     ap.add_argument("--tag", default="monitor")
     ap.add_argument("--dry", action="store_true", help="fake hardware, for testing the script")
+    ap.add_argument("--quiet", action="store_true", help="log to file only (use when started detached)")
     args = ap.parse_args(argv)
 
     ts = time.strftime("%Y%m%d_%H%M%S")
     root = os.path.join(HERE, "..")
     os.makedirs(os.path.join(root, "logs"), exist_ok=True)
     os.makedirs(os.path.join(root, "data", "monitor"), exist_ok=True)
-    log = Log(os.path.join(root, "logs", "monitor_%s.log" % ts))
+    log = Log(os.path.join(root, "logs", "monitor_%s.log" % ts), echo=not args.quiet)
     stem = os.path.join(root, "data", "monitor", "%s_%s" % (args.tag, ts))
     log("monitor start: %s" % vars(args))
 
