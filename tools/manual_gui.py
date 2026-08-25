@@ -219,7 +219,7 @@ class DevicePanel(ttk.LabelFrame):
 class App(tk.Tk):
     def __init__(self):
         tk.Tk.__init__(self)
-        self.title("OptiComp2 – 手动硬件控制 (步骤 1: 电机与快门)")
+        self.title("OptiComp2 – 手动硬件控制 (电机 / 快门 / 光谱仪)")
         self.bus = None
         self.results = queue.Queue()
         self.worker = HardwareWorker(self.results)
@@ -249,7 +249,15 @@ class App(tk.Tk):
         self.conn_var = tk.StringVar(value="未连接")
         ttk.Label(top, textvariable=self.conn_var, foreground="#a00").pack(side="left", padx=10)
 
-        body = ttk.Frame(self, padding=6)
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True, padx=6)
+        stages_tab = ttk.Frame(self.nb)
+        self.nb.add(stages_tab, text="  电机与快门  ")
+        from spectro_panel import SpectrometerPanel
+        self.spectro = SpectrometerPanel(self.nb, self)
+        self.nb.add(self.spectro, text="  光谱仪  ")
+
+        body = ttk.Frame(stages_tab, padding=6)
         body.pack(fill="both", expand=True)
         self.panels = []
         for i, spec in enumerate(DEVICES):
@@ -259,7 +267,7 @@ class App(tk.Tk):
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
 
-        raw = ttk.LabelFrame(self, text="原始命令 (高级)", padding=6)
+        raw = ttk.LabelFrame(stages_tab, text="原始命令 (高级)", padding=6)
         raw.pack(fill="x", padx=6)
         ttk.Label(raw, text="例如 2gs / 0in / 3gj").pack(side="left")
         self.raw_var = tk.StringVar()
@@ -270,7 +278,7 @@ class App(tk.Tk):
 
         logf = ttk.LabelFrame(self, text="日志 (TX/RX)", padding=6)
         logf.pack(fill="both", expand=True, padx=6, pady=6)
-        self.log = scrolledtext.ScrolledText(logf, height=12, font=("Consolas", 9), state="disabled")
+        self.log = scrolledtext.ScrolledText(logf, height=8, font=("Consolas", 9), state="disabled")
         self.log.pack(fill="both", expand=True)
         bar = ttk.Frame(logf)
         bar.pack(fill="x")
@@ -377,6 +385,7 @@ class App(tk.Tk):
                 f.write("\n".join(self.log_lines) + "\n")
 
     def _on_close(self):
+        self.spectro.shutdown()
         self.disconnect()
         self.destroy()
 
