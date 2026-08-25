@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from hw import elliptec as ell
 
 DEFAULT_PORT = "COM4"
-__version__ = "0.6"        # shown in the title bar and log header so the running build is unambiguous
+__version__ = "0.7"        # shown in the title bar and log header so the running build is unambiguous
 
 # Device roles on the OptiComp bus (from stageframework.py + thesis chapter 4).
 DEVICES = [
@@ -220,7 +220,7 @@ class DevicePanel(ttk.LabelFrame):
 class App(tk.Tk):
     def __init__(self):
         tk.Tk.__init__(self)
-        self.title("OptiComp2 v%s – 手动硬件控制 (电机 / 快门 / 光谱仪 / 序列)" % __version__)
+        self.title("OptiComp2 v%s – 电机 / 快门 / 光谱仪 / 序列 / 分析" % __version__)
         self.bus = None
         self.sequence_running = False
         self.results = queue.Queue()
@@ -261,6 +261,9 @@ class App(tk.Tk):
         from sequence_panel import SequencePanel
         self.sequence = SequencePanel(self.nb, self)
         self.nb.add(self.sequence, text="  序列  ")
+        from analysis_panel import AnalysisPanel
+        self.analysis = AnalysisPanel(self.nb, self)
+        self.nb.add(self.analysis, text="  分析  ")
 
         body = ttk.Frame(stages_tab, padding=6)
         body.pack(fill="both", expand=True)
