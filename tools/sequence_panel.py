@@ -128,8 +128,8 @@ class SequencePanel(ttk.Frame):
         self.pause_var = tk.StringVar(value="请更换样品，然后点确定")
         ttk.Entry(f, textvariable=self.pause_var, width=24).grid(row=6, column=1, columnspan=2, sticky="w")
         ttk.Button(f, text="暂停", command=self.add_pause).grid(row=6, column=3, sticky="ew", pady=1)
-        ttk.Button(f, text="快门关", command=lambda: self._add([sq.shutter(False)])).grid(row=7, column=0, columnspan=2, sticky="ew", pady=1)
-        ttk.Button(f, text="快门开", command=lambda: self._add([sq.shutter(True)])).grid(row=7, column=2, columnspan=2, sticky="ew", pady=1)
+        ttk.Button(f, text="快门关", command=lambda: self._add([sq.shutter(False)], dedupe=False)).grid(row=7, column=0, columnspan=2, sticky="ew", pady=1)
+        ttk.Button(f, text="快门开", command=lambda: self._add([sq.shutter(True)], dedupe=False)).grid(row=7, column=2, columnspan=2, sticky="ew", pady=1)
 
         f = ttk.LabelFrame(right, text="运行", padding=6)
         f.pack(fill="x", pady=2)
@@ -156,9 +156,23 @@ class SequencePanel(ttk.Frame):
         n_acq = sum(1 for s in self.steps if s.kind == "acquire")
         self.queue_frame.config(text="步骤队列 (%d 步, %d 次采集)" % (len(self.steps), n_acq))
 
-    def _add(self, steps):
+    @staticmethod
+    def _key(step):
+        return (step.kind, repr(sorted(step.params.items())))
+
+    def _already_queued(self, steps):
+        """True if this exact block already appears contiguously in the queue."""
+        new = [self._key(s) for s in steps]
+        have = [self._key(s) for s in self.steps]
+        k = len(new)
+        return k > 0 and any(have[i:i + k] == new for i in range(len(have) - k + 1))
+
+    def _add(self, steps, dedupe=True):
         if self.running:
             messagebox.showwarning("序列运行中", "运行期间不能修改队列")
+            return
+        if dedupe and self._already_queued(steps):
+            messagebox.showinfo("已在队列中", "完全相同的步骤块已经在队列里，不再重复添加。\n如确需重复，请先删除原有的再加。")
             return
         for s in steps:
             self.steps.append(s)
@@ -196,12 +210,12 @@ class SequencePanel(ttk.Frame):
 
     def add_set_it(self):
         try:
-            self._add([sq.set_it(int(self.it_var.get()))])
+            self._add([sq.set_it(int(self.it_var.get()))], dedupe=False)
         except ValueError:
             messagebox.showerror("输入错误", "积分时间需为整数毫秒")
 
     def add_pause(self):
-        self._add([sq.pause(self.pause_var.get())])
+        self._add([sq.pause(self.pause_var.get())], dedupe=False)
 
     def remove_selected(self):
         if self.running:
