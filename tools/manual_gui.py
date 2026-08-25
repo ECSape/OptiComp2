@@ -18,6 +18,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from hw import elliptec as ell
+from hw import config as cfg
 
 DEFAULT_PORT = "COM4"
 __version__ = "0.15"        # shown in the title bar and log header so the running build is unambiguous
