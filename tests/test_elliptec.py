@@ -123,6 +123,27 @@ class BusTests(unittest.TestCase):
         with self.assertRaises(ell.ElliptecError):
             bus.move_abs("3", 0xFA72)
 
+    def test_small_residual_triggers_corrective_move(self):
+        # real-bus case: ELL18 stopped 42 pulses short after a long move; a second `ma` fixes it
+        bus, ser = make_bus({b"2ma0000C0E4": [b"2PO0000C10E\r\n", b"2PO0000C0E5\r\n"], b"2gp": [b"2PO0000446B\r\n"]})
+        self.assertEqual(bus.move_abs("2", 0xC0E4), 0xC0E5)
+        self.assertEqual(ser.sent.count(b"2ma0000C0E4"), 2)
+
+    def test_persistent_small_residual_is_accepted_with_warning(self):
+        logs = []
+        bus, ser = make_bus({b"2ma0000C0E4": [b"2PO0000C10E\r\n"], b"2gp": [b"2PO0000446B\r\n"]})
+        bus._log = lambda d, t: logs.append(t)
+        self.assertEqual(bus.move_abs("2", 0xC0E4), 0xC10E)
+        self.assertEqual(ser.sent.count(b"2ma0000C0E4"), 3)
+        self.assertTrue(any("WARNING" in t for t in logs))
+
+    def test_relative_move_correction_uses_absolute_target(self):
+        bus, ser = make_bus({b"3gp": [b"3PO00001000\r\n"], b"3mr00000100": [b"3PO00001120\r\n"],
+                             b"3ma00001100": [b"3PO00001100\r\n"]})
+        self.assertEqual(bus.move_rel("3", 0x100), 0x1100)
+        self.assertEqual(ser.sent.count(b"3mr00000100"), 1)
+        self.assertIn(b"3ma00001100", ser.sent)
+
     def test_lost_reply_but_move_completed(self):
         bus, ser = make_bus({b"3ma0000FA72": [b""], b"3gs": [b"", b"3GS09\r\n", b"3GS00\r\n"],
                              b"3gp": [b"3PO0000F438\r\n", b"3PO0000FA70\r\n"]})

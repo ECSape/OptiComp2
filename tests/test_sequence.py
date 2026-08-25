@@ -114,7 +114,7 @@ class RunnerTests(unittest.TestCase):
     def test_wrong_angle_aborts(self):
         class StuckBus(FakeBus):
             def move_abs(self, addr, pulses):
-                return pulses - 1000
+                return pulses - 1000            # 2.5 deg short
         with self.assertRaises(RuntimeError):
             sq.Runner(StuckBus(), FakeSpec(), tempfile.mkdtemp()).run([sq.sample_theta(45)])
 

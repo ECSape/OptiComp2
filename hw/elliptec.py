@@ -143,7 +143,8 @@ class ElliptecBus(object):
         self.poll_timeout = 2.0                   # per-GS-query timeout while polling a moving module
         self.poll_interval = 0.5
         self.attempts = 3                         # resend a swallowed motion command this many times
-        self.position_tolerance = 20              # pulses (0.05 deg on ELL14/18)
+        self.position_tolerance = 20              # pulses (0.05 deg on ELL14/18): 'at target'
+        self.accept_tolerance = 120               # pulses (0.3 deg): accept after corrective moves, with a warning
         self.mech_retry_delay = 1.0               # seconds before retrying after GS02
 
     # ---- low level ---------------------------------------------------------
@@ -274,53 +275,47 @@ class ElliptecBus(object):
     def _motion_query_once(self, addr, cmd, data="", expect_position=True, target=None, retry_if_unmoved=True):
         """Issue a motion command robustly.
 
-        Observed on the real bus (2026-08-25): an ELL18 occasionally swallows a `ma`
-        command – no reply, no motion, GS00 afterwards. So: wait `first_wait` for the
-        reply; if none, poll the status until idle and read the position. If the module
-        never moved, resend (up to `attempts` times). If it reached `target`, the reply
-        was merely lost. Anything else is an error – never silently accept a wrong angle.
+        Observed on the real bus (2026-08-25):
+          * an ELL18 occasionally swallows a command (no reply, no motion, GS00) -> resend;
+          * while moving it stays silent and sends PO only on completion -> poll GS;
+          * after a long move it may stop a few hundredths of a degree short -> send the
+            target again (corrective move); accept within `accept_tolerance` with a log line.
+        Never silently accept a wrong position.
         """
         start = self.position(addr) if (expect_position and retry_if_unmoved) else None
+        tx_cmd, tx_data = cmd, data
         for attempt in range(1, self.attempts + 1):
             try:
-                rep = self.query(addr, cmd, data, timeout=self.first_wait)
+                rep = self.query(addr, tx_cmd, tx_data, timeout=self.first_wait)
             except ReplyTimeout:
                 rep = None
             if rep is not None:
                 pos = self._motion_reply(addr, rep, expect_position)
-                if target is None or pos is None or abs(pos - target) <= self.position_tolerance:
-                    return pos
-                raise ElliptecError("module %s reported %d after %s, expected %d" % (addr, pos, cmd, target))
-            self._log("--", "no reply from %s to %s%s within %.0f s, polling status" % (addr, cmd, data, self.first_wait))
-            code, pos = self._poll_until_idle(addr)
-            if code != 0:
-                raise DeviceStatusError(addr, code)
-            if not expect_position:
-                return None
-            if pos is None:
-                pos = self.position(addr)
-            if target is None or abs(pos - target) <= self.position_tolerance:
-                return pos                                # reply lost but move completed
-            if start is not None and abs(pos - start) <= self.position_tolerance and retry_if_unmoved:
-                self._log("--", "module %s ignored %s%s (attempt %d/%d), resending" % (addr, cmd, data, attempt, self.attempts))
-                continue
-            raise ElliptecError("module %s stopped at %d pulses, target %d (cmd %s%s)" % (addr, pos, target, cmd, data))
-        raise ElliptecError("module %s ignored %s%s %d times" % (addr, cmd, data, self.attempts))
-
-    def _motion_reply(self, addr, rep, expect_position=True):
-        """Interpret the reply to a motion command; returns final position (pulses) or None."""
-        if rep["kind"] == "PO":
-            return rep["value"]
-        if rep["kind"] == "GS":
-            code, pos = rep["code"], None
-            if code == BUSY:
+            else:
+                self._log("--", "no reply from %s to %s%s within %.0f s, polling status" % (addr, tx_cmd, tx_data, self.first_wait))
                 code, pos = self._poll_until_idle(addr)
-            if code != 0:
-                raise DeviceStatusError(addr, code)
-            if not expect_position:
-                return None
-            return pos if pos is not None else self.position(addr)
-        raise ElliptecError("unexpected reply %s" % rep["raw"])
+                if code != 0:
+                    raise DeviceStatusError(addr, code)
+                if expect_position and pos is None:
+                    pos = self.position(addr)
+            if not expect_position or target is None:
+                return pos
+            err = abs(pos - target)
+            if err <= self.position_tolerance:
+                return pos
+            if err <= self.accept_tolerance:
+                if attempt < self.attempts:
+                    self._log("--", "module %s at %d, target %d (off by %d pulses): corrective move" % (addr, pos, target, pos - target))
+                    tx_cmd, tx_data = "ma", hex32(target)          # never repeat a relative move
+                    start = None
+                    continue
+                self._log("--", "WARNING module %s settled at %d, target %d (off by %d pulses); accepted" % (addr, pos, target, pos - target))
+                return pos
+            if start is not None and abs(pos - start) <= self.position_tolerance and retry_if_unmoved:
+                self._log("--", "module %s ignored %s%s (attempt %d/%d), resending" % (addr, tx_cmd, tx_data, attempt, self.attempts))
+                continue
+            raise ElliptecError("module %s stopped at %d pulses, target %d (cmd %s%s)" % (addr, pos, target, tx_cmd, tx_data))
+        raise ElliptecError("module %s ignored %s%s %d times" % (addr, cmd, data, self.attempts))
 
     def home(self, addr, direction=0):
         return self._motion_query(addr, "ho", str(direction), target=0)

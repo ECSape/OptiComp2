@@ -167,9 +167,12 @@ class Runner(object):
         pulses = self.bus.move_abs(addr, int(round((deg % 360.0) * ppd)))
         actual = (pulses / ppd) % 360.0
         self.positions[addr] = actual
-        if abs(((actual - deg + 180) % 360) - 180) > 0.05:
+        err = abs(((actual - deg + 180) % 360) - 180)
+        if err > 0.3:
             # the bus layer already retried; a wrong angle must abort, never be measured
             raise RuntimeError("stage %s reached %.3f° instead of %.3f° – sequence aborted" % (addr, actual, deg))
+        if err > 0.05:
+            self.log("WARNING stage %s settled at %.3f° (target %.3f°, off by %.3f°); actual angle recorded" % (addr, actual, deg, actual - deg))
         return actual
 
     @staticmethod
