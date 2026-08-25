@@ -90,14 +90,16 @@ class RunnerTests(unittest.TestCase):
         man = r.run(steps)
         self.assertTrue(bwtek.peak_in_band(900 + 30000 * spec.integration_ms / 100.0))      # auto-IT converged
         tags = [m["tag"] for m in man]
-        self.assertEqual(tags, ["dark", "x_S_45", "x_DB_S"])
+        self.assertEqual(tags, ["dark", "x_S_45", "x_DB_S", "dark_db"])
+        self.assertEqual(man[3]["kind"], "dark")
+        self.assertEqual(man[3]["shutter_open"], False)
         self.assertEqual(man[0]["shutter_open"], False)
         self.assertEqual(man[1]["theta"], 45.0)
         self.assertAlmostEqual(man[1]["sample_deg"], 45 + cfg.SAMPLE_VAR_OFFSET, places=2)   # pulse quantisation
         self.assertEqual(man[0]["integration_ms"], man[1]["integration_ms"])                  # dark at the calibrated IT
         self.assertEqual(len(prompts), 2)
         with open(os.path.join(out, "manifest.json")) as f:
-            self.assertEqual(len(json.load(f)["spectra"]), 3)
+            self.assertEqual(len(json.load(f)["spectra"]), 4)
         d = np.loadtxt(os.path.join(out, "dark.csv"), delimiter=",", skiprows=1)
         self.assertEqual(d.shape, (2048, 2))
 

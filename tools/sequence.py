@@ -121,7 +121,8 @@ def build_double_beam(pols, avg, prefix):
              stage(cfg.SYSTEM, cfg.SYSTEM_DB, "探测臂 DB 位"), stage(cfg.SAMPLE, cfg.SAMPLE_DB, "样品台 DB 位")]
     for pol in pols:
         steps += [polariser(pol), shutter(True), acquire("%s_DB_%s" % (prefix, pol), avg, kind="db", pol=pol)]
-    steps += [shutter(False),
+    steps += [shutter(False), acquire("dark_db", avg, kind="dark")]        # dark at the DB integration time
+    steps += [
               stage(cfg.SAMPLE, cfg.SAMPLE_EXCHANGE, "样品台交换位"), stage(cfg.SYSTEM, cfg.SYSTEM_EXCHANGE, "探测臂交换位"),
               pause("请把端口盖换回正常测量位置，然后点确定"),
               stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂零位"), stage(cfg.SAMPLE, cfg.SAMPLE_ZERO, "样品台零位")]

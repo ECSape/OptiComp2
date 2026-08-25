@@ -245,6 +245,21 @@ class SequencePanel(ttk.Frame):
             messagebox.showwarning("未就绪", "请先在前两页连接串口并初始化光谱仪")
             return
         outdir = os.path.join(DATA_ROOT, self.session_var.get().strip() or time.strftime("session_%Y%m%d_%H%M%S"))
+        # integration time consistency: a restarted GUI defaults to 100 ms, but the session's
+        # spectra must all share one integration time unless the queue sets it explicitly
+        first_acq = next((i for i, s in enumerate(self.steps) if s.kind == "acquire"), None)
+        sets_it = any(s.kind in ("set_it", "auto_it", "apply_min_it") for s in self.steps[:first_acq]) if first_acq is not None else True
+        session_its = [r["integration_ms"] for r in sq.Runner.load_manifest(outdir) if r.get("kind") == "var"]
+        if first_acq is not None and not sets_it and session_its:
+            session_it = max(set(session_its), key=session_its.count)
+            current = self.app.spectro.spec.integration_ms
+            if current != session_it:
+                if messagebox.askyesno("积分时间不一致",
+                                       "光谱仪当前积分时间 %s ms，而会话 %s 已有数据用的是 %d ms。\n\n"
+                                       "是否在队列开头插入『积分时间 %d ms』？（选否则按 %s ms 采集）"
+                                       % (current, os.path.basename(outdir), session_it, session_it, current)):
+                    self.steps.insert(0, sq.set_it(session_it))
+                    self._refresh()
         tags = [s.params["tag"] for s in self.steps if s.kind == "acquire"]
         n_acq = len(tags)
         existing = sorted(set(t for t in tags if t != "dark") & set(r.get("tag") for r in sq.Runner.load_manifest(outdir)))
