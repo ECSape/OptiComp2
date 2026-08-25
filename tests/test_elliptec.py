@@ -199,12 +199,21 @@ class BusTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
         self.assertEqual(ser.sent.count(b"3ma00011FC7"), 2)
 
-    def test_shutter_no_move_is_not_retried(self):
-        bus, ser = make_bus({b"0fw": [b""], b"0gs": [b"0GS00\r\n"], b"0gp": [b"0PO0000001F\r\n"]})
+    def test_shutter_already_open_is_accepted(self):
+        ell6 = b"0IN061060013020201101001F00000000\r\n"
+        bus, ser = make_bus({b"0in": [ell6], b"0fw": [b""], b"0gs": [b"0GS00\r\n"], b"0gp": [b"0PO0000001F\r\n"]})
         bus.first_wait = 0.01
         bus.poll_interval = 0
         self.assertEqual(bus.forward("0"), 0x1F)
         self.assertEqual(ser.sent.count(b"0fw"), 1)
+
+    def test_shutter_swallowed_fw_is_resent(self):
+        ell6 = b"0IN061060013020201101001F00000000\r\n"
+        bus, ser = make_bus({b"0in": [ell6], b"0fw": [b"", b"0PO0000001F\r\n"], b"0gs": [b"0GS00\r\n"], b"0gp": [b"0PO00000000\r\n"]})
+        bus.first_wait = 0.01
+        bus.poll_interval = 0
+        self.assertEqual(bus.forward("0"), 0x1F)
+        self.assertEqual(ser.sent.count(b"0fw"), 2)
 
     def test_move_error_status_raises(self):
         bus, ser = make_bus({b"2ho0": [b"2GS02\r\n"], b"2gp": [b"2PO00000100\r\n"]})

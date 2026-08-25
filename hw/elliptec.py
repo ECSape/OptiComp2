@@ -146,6 +146,7 @@ class ElliptecBus(object):
         self.position_tolerance = 20              # pulses (0.05 deg on ELL14/18): 'at target'
         self.accept_tolerance = 120               # pulses (0.3 deg): accept after corrective moves, with a warning
         self.mech_retry_delay = 1.0               # seconds before retrying after GS02
+        self._travel = {}                         # addr -> travel from IN (sliders)
 
     # ---- low level ---------------------------------------------------------
     def close(self):
@@ -248,10 +249,13 @@ class ElliptecBus(object):
                 raise ElliptecError("module %s still busy after %.0f s" % (addr, self.motion_timeout))
             time.sleep(self.poll_interval)
 
-    def _motion_query(self, addr, cmd, data="", expect_position=True, target=None, retry_if_unmoved=True):
+    def _motion_query(self, addr, cmd, data="", expect_position=True, target=None, retry_if_unmoved=True,
+                      tolerance=None, accept=None):
         """Motion command with one automatic retry after a mechanical time-out (GS02)."""
+        tol = self.position_tolerance if tolerance is None else tolerance
+        acc = self.accept_tolerance if accept is None else accept
         try:
-            return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved)
+            return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved, tol, acc)
         except DeviceStatusError as e:
             if e.code == BUSY:
                 raise
@@ -263,16 +267,16 @@ class ElliptecBus(object):
                     pos = self.position(addr)
                 except ElliptecError:
                     pos = None
-                if pos is not None and abs(pos - target) <= self.position_tolerance:
+                if pos is not None and abs(pos - target) <= tol:
                     self._log("--", "module %s reported GS %02X (%s) but is at target %d; accepted" % (addr, e.code, STATUS_CODES.get(e.code, "?"), pos))
                     return pos
             if e.code != MECHANICAL_TIMEOUT:
                 raise
             self._log("--", "module %s mechanical time-out on %s%s, retrying once after %.0f s" % (addr, cmd, data, self.mech_retry_delay))
             time.sleep(self.mech_retry_delay)
-            return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved)
+            return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved, tol, acc)
 
-    def _motion_query_once(self, addr, cmd, data="", expect_position=True, target=None, retry_if_unmoved=True):
+    def _motion_query_once(self, addr, cmd, data, expect_position, target, retry_if_unmoved, tol, acc):
         """Issue a motion command robustly.
 
         Observed on the real bus (2026-08-25):
@@ -301,9 +305,9 @@ class ElliptecBus(object):
             if not expect_position or target is None:
                 return pos
             err = abs(pos - target)
-            if err <= self.position_tolerance:
+            if err <= tol:
                 return pos
-            if err <= self.accept_tolerance:
+            if err <= acc:
                 if attempt < self.attempts:
                     self._log("--", "module %s at %d, target %d (off by %d pulses): corrective move" % (addr, pos, target, pos - target))
                     tx_cmd, tx_data = "ma", hex32(target)          # never repeat a relative move
@@ -311,7 +315,7 @@ class ElliptecBus(object):
                     continue
                 self._log("--", "WARNING module %s settled at %d, target %d (off by %d pulses); accepted" % (addr, pos, target, pos - target))
                 return pos
-            if start is not None and abs(pos - start) <= self.position_tolerance and retry_if_unmoved:
+            if start is not None and abs(pos - start) <= tol and retry_if_unmoved:
                 self._log("--", "module %s ignored %s%s (attempt %d/%d), resending" % (addr, tx_cmd, tx_data, attempt, self.attempts))
                 continue
             raise ElliptecError("module %s stopped at %d pulses, target %d (cmd %s%s)" % (addr, pos, target, tx_cmd, tx_data))
@@ -342,12 +346,19 @@ class ElliptecBus(object):
         start = self.position(addr)
         return self._motion_query(addr, "mr", hex32(pulses), target=start + int(pulses))
 
+    def _slider_travel(self, addr):
+        """Forward position of a slider (ELL6 reports positions in mm; travel from IN)."""
+        if addr not in self._travel:
+            self._travel[addr] = self.info(addr).travel
+        return self._travel[addr]
+
     def forward(self, addr):
-        # slider: 'already forward' is a legitimate no-move, so never resend
-        return self._motion_query(addr, "fw", retry_if_unmoved=False)
+        # slider: verify it really is at the forward end (a swallowed 'fw' would leave the
+        # shutter closed and the following spectrum would silently be a dark frame)
+        return self._motion_query(addr, "fw", target=self._slider_travel(addr), tolerance=0, accept=0)
 
     def backward(self, addr):
-        return self._motion_query(addr, "bw", retry_if_unmoved=False)
+        return self._motion_query(addr, "bw", target=0, tolerance=0, accept=0)
 
 
 class RotationStage(object):
