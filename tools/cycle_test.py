@@ -31,6 +31,10 @@ import monitor                                    # noqa: E402  (Log, fakes, ban
 import sequence as sq                             # noqa: E402
 
 
+class _StopRequested(Exception):
+    pass
+
+
 def move_set(kind, sample_deg, system_deg, pol):
     back = [sq.stage(cfg.SYSTEM, system_deg, "arm back"), sq.stage(cfg.SAMPLE, sample_deg, "sample back")]
     if kind == "sample":
@@ -69,6 +73,7 @@ def main(argv=None):
     ap.add_argument("--dry-fail-at", type=int, default=0, help=argparse.SUPPRESS)
     ap.add_argument("--no-recover", action="store_true", help="abort on a spectrometer read failure instead of recovering")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--stop-file", default=None, help="finish cleanly when this file appears (default logs/STOP)")
     args = ap.parse_args(argv)
 
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -78,12 +83,17 @@ def main(argv=None):
     log = monitor.Log(os.path.join(root, "logs", "cycle_%s.log" % ts), echo=not args.quiet)
     stem = os.path.join(root, "data", "cycle", "%s_%s" % (args.tag, ts))
     state_path = os.path.join(root, "data", "stage_state.json") if args.dry else cfg.STATE_FILE
+    stop_file = args.stop_file or os.path.join(root, "logs", "STOP")
+    if os.path.exists(stop_file):
+        os.remove(stop_file)
     log("cycle test start: %s" % vars(args))
+    log("create %s to stop cleanly (never taskkill: the shutter would stay open)" % stop_file)
 
     wl = bwtek.wavelengths()
     bus = spec = runner = None
     shutter_open = False
     rows, frames, seg_of, dark = [], [], [], None
+    darks = []                                     # one dark per segment (shutter closed after the movements)
     segments = []                                  # (label, [band means per frame])
     rc = 0
     try:
@@ -116,14 +126,21 @@ def main(argv=None):
 
         for st in [sq.shutter(False), sq.stage(cfg.SYSTEM, args.system, "arm"), sq.stage(cfg.SAMPLE, args.sample, "sample"), sq.polariser(args.pol)]:
             runner.run_step(st)
-        dark = spec.read(3, 0, 0)
-        log("dark (avg 3): median %d" % int(np.median(dark)))
+        def take_dark(label):
+            d = spec.read(3, 0, 0)
+            darks.append(d)
+            log("dark (%s, avg 3): median %d, max %d" % (label, int(np.median(d)), int(d.max())))
+            return d
+
+        dark = take_dark("baseline")
 
         recoveries = [0]
 
         def read_frame():
             """One spectrum; a DLL/USB failure is recovered like in monitor.py (up to MAX_RECOVERIES)."""
             while True:
+                if os.path.exists(stop_file):
+                    raise _StopRequested()
                 try:
                     return spec.read(args.avg, 0, 0)
                 except bwtek.BWTekError as e:
@@ -144,6 +161,8 @@ def main(argv=None):
                     m = monitor.band_means(c, dark, wl)
                     means.append(m)
                     st = bwtek.spectrum_stats(c)
+                    if st["saturated_active"]:
+                        log("WARNING %s frame %d: %d saturated pixels" % (label, k + 1, st["saturated_active"]))
                     rows.append((len(segments), label, time.strftime("%H:%M:%S"), st["max"], float(np.median(c[:bwtek.ACTIVE_FIRST])), m))
                     frames.append(c.copy())
                     seg_of.append(len(segments))
@@ -166,12 +185,15 @@ def main(argv=None):
             log("--- cycle %d: movements '%s' (shutter closed)" % (c, args.moves))
             for st in move_set(args.moves, args.sample, args.system, args.pol):
                 runner.run_step(st)
+            dark = take_dark("cycle %d" % c)          # thermal drift of the baseline over a long test
             measure("after %s #%d" % (args.moves, c))
         shutter_open = False
         log("summary (band means relative to baseline, %s):" % " / ".join("%d-%d" % b for b in monitor.BANDS))
         base = segments[0][1].mean(axis=0)
         for i, (label, arr) in enumerate(segments):
             log("  %d %-22s %s" % (i, label, " ".join("%+.2f%%" % v for v in 100.0 * (arr.mean(axis=0) / base - 1.0))))
+    except _StopRequested:
+        log("stop file found - finishing early")
     except KeyboardInterrupt:
         log("interrupted by user")
         rc = 1
@@ -203,7 +225,8 @@ def main(argv=None):
                     for seg, label, t, peak, base_, m in rows:
                         fh.write("%d,%s,%s,%d,%.0f,%s\n" % (seg, label, t, peak, base_, ",".join("%.1f" % v for v in m)))
                 np.savez_compressed(stem + ".npz", wavelength=wl, spectra=np.array(frames, dtype=np.uint16), segment=np.array(seg_of),
-                                    dark=dark, integration_ms=args.it, average=args.avg, labels=np.array([s[0] for s in segments]))
+                                    dark=dark, darks=np.array(darks, dtype=np.uint16), integration_ms=args.it, average=args.avg,
+                                    labels=np.array([s[0] for s in segments]))
                 log("saved %s.csv / .npz" % stem)
             except Exception as e:
                 log("!! saving failed: %s" % e)

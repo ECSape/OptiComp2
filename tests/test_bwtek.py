@@ -161,6 +161,19 @@ class FakeRun(object):
         return cp
 
 
+class PnpSafetyTests(unittest.TestCase):
+    def test_only_spectrometer_ids_may_be_restarted(self):
+        calls = []
+        bwtek._run = lambda *a, **k: calls.append(a)
+        try:
+            for bad in (r"USB\VID_0424&PID_2514\5&1", r"USB\VID_0403&PID_6015\DT03AOM0", r"USB\ROOT_HUB30\4&1"):
+                with self.assertRaises(bwtek.BWTekError):
+                    bwtek.pnp_restart(bad)
+            self.assertEqual(calls, [])                                  # nothing executed
+        finally:
+            bwtek._run = None
+
+
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
         self.dll = HangDll()

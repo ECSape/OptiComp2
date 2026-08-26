@@ -163,6 +163,7 @@ def main(argv=None):
     ap.add_argument("--dry", action="store_true", help="fake hardware, for testing the script")
     ap.add_argument("--dry-fail-at", type=int, default=0, help=argparse.SUPPRESS)          # tests
     ap.add_argument("--quiet", action="store_true", help="log to file only (use when started detached)")
+    ap.add_argument("--stop-file", default=None, help="finish cleanly when this file appears (default logs/STOP); taskkill would skip the shutter close")
     args = ap.parse_args(argv)
 
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -172,7 +173,11 @@ def main(argv=None):
     log = Log(os.path.join(root, "logs", "monitor_%s.log" % ts), echo=not args.quiet)
     stem = os.path.join(root, "data", "monitor", "%s_%s" % (args.tag, ts))
     state_path = os.path.join(root, "data", "stage_state.json") if args.dry else cfg.STATE_FILE
+    stop_file = args.stop_file or os.path.join(root, "logs", "STOP")
+    if os.path.exists(stop_file):
+        os.remove(stop_file)
     log("monitor start: %s" % vars(args))
+    log("create %s to stop cleanly (never taskkill: the shutter would stay open)" % stop_file)
 
     wl = bwtek.wavelengths()
     bus = spec = None
@@ -233,6 +238,9 @@ def main(argv=None):
         first = None
         k = 0
         while time.time() - t0 < args.minutes * 60.0:
+            if os.path.exists(stop_file):
+                log("stop file found - finishing after %d frames" % k)
+                break
             try:
                 counts = spec.read(args.avg, 0, 0)
             except bwtek.BWTekError as e:

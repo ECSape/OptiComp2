@@ -228,7 +228,7 @@ class SpectrometerPanel(ttk.Frame):
     def _show_and_continue(self, counts):
         self._show(counts)
         if self.worker.live.is_set():
-            self.after(50, self._live_step)
+            self.after(250, self._live_step)
 
     # ---- stability monitor -------------------------------------------------
     MON_BANDS = ((450, 550), (600, 700), (800, 900))

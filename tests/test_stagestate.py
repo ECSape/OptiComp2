@@ -57,7 +57,7 @@ class StateTests(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def test_power_cycle_signature_is_reported(self):
-        ss.record(FakeBus(self.good, vel={"2": 32}), self.path, ppd=PPD)
+        ss.record(FakeBus(self.good, vel={"2": 50}), self.path, ppd=PPD)
         # what the bus looked like on 2026-08-26 after the USB replug: polariser homed to 0,
         # sample at 102.9, arm at 11 deg with a mechanical time-out, arm speed back to 64 %
         after = FakeBus({"0": 0, "1": -7, "2": 0x1144, "3": 0xA00B}, status={"2": 2}, vel={"2": 64})
@@ -68,7 +68,7 @@ class StateTests(unittest.TestCase):
         self.assertIn("module 1 moved", text)
         self.assertIn("module 3 moved", text)
         self.assertIn("module 2 moved", text)
-        self.assertIn("velocity 32% -> 64%", text)
+        self.assertIn("velocity 50% -> 64%", text)
         self.assertTrue(ss.arm_reference_lost(live))
 
     def test_small_settling_is_not_an_anomaly(self):
@@ -93,9 +93,9 @@ class StateTests(unittest.TestCase):
         self.assertEqual(ss.protect(bus), {cfg.SYSTEM})
         logs = []
         ss.apply_velocities(bus, log=logs.append)
-        self.assertEqual(bus.set_vel, [(cfg.SYSTEM, 32)])
+        self.assertEqual(bus.set_vel, [(cfg.SYSTEM, 50)])
         ss.apply_velocities(bus, log=logs.append)            # already right -> no command
-        self.assertEqual(bus.set_vel, [(cfg.SYSTEM, 32)])
+        self.assertEqual(bus.set_vel, [(cfg.SYSTEM, 50)])
         self.assertEqual(len(logs), 1)
 
     def test_corrupt_record_is_ignored(self):

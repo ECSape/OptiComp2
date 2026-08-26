@@ -161,6 +161,7 @@ class ElliptecBus(object):
         self.mech_retry_delay = 1.0               # seconds before retrying after GS02
         self.stray_limit = 3                      # stray / fragmentary lines discarded per query
         self.protected_home = set()               # addresses whose home() needs force=True (fibre arm)
+        self._home_permit = None                  # address currently allowed to receive 'ho' (set by home(force=True))
         self._travel = {}                         # addr -> travel from IN (sliders)
 
     # ---- low level ---------------------------------------------------------
@@ -180,6 +181,9 @@ class ElliptecBus(object):
         accepted as the answer (e.g. ("PO",) for gp); other kinds from the same module - a
         late completion PO in front of a gs answer - are discarded as strays.
         """
+        if cmd == "ho" and str(addr) in self.protected_home and self._home_permit != str(addr):
+            raise ElliptecError("home on module %s is blocked (fibre-carrying arm); use bus.home(addr, force=True) "
+                                "only with the fibre slack and an operator watching" % addr)
         tx = ("%s%s%s" % (addr, cmd, data)).encode("ascii")
         with self._lock:
             try:
@@ -375,7 +379,12 @@ class ElliptecBus(object):
         if str(addr) in self.protected_home and not force:
             raise ElliptecError("home on module %s is blocked (fibre-carrying arm); pass force=True "
                                 "only with the fibre slack and an operator watching" % addr)
-        return self._motion_query(addr, "ho", str(direction), target=0, retry_if_unmoved=False)
+        with self._lock:
+            self._home_permit = str(addr)
+            try:
+                return self._motion_query(addr, "ho", str(direction), target=0, retry_if_unmoved=False)
+            finally:
+                self._home_permit = None
 
     def move_abs(self, addr, pulses):
         return self._motion_query(addr, "ma", hex32(pulses), target=int(pulses))

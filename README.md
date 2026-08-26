@@ -19,6 +19,7 @@ folder and repository.
 * `tools/cycle_test.py` – movement-cycle test: signal before/after stage movements
 * `tools/restore_stages.py` – report / restore the stage references after a bus power event
 * `tools/usb_reset.py` – probe or PnP-restart the spectrometer's USB device (admin)
+* `tools/shutter_close.py` – close and verify the shutter after a script died hard
 * `tools/ell_probe.py`, `tools/spec_probe.py` – read-only probes
 * `analysis/var.py` – VAR reflectance from a session (double-beam substitution correction)
 * `tests/` – unit tests with fakes (`py -m unittest discover -s tests`)

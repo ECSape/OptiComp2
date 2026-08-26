@@ -5,7 +5,7 @@
     py C:\\OptiComp2\\tools\\restore_stages.py --safe          # home polariser + sample stage, park at S / 185 deg
     py C:\\OptiComp2\\tools\\restore_stages.py --arm           # ALSO home the fibre arm (operator watching!) and park at 44 deg
 
-Order with --safe --arm: shutter closed, polariser home -> S, sample home -> --sample, arm speed 32 %,
+Order with --safe --arm: shutter closed, polariser home -> S, sample home -> --sample, arm speed 50 %,
 arm home (ho0, as the original program did on every start) -> --system. The arm step is refused
 unless the fibre has been checked: the script asks for a typed confirmation unless --yes.
 Everything is logged to logs/restore_<timestamp>.log and the final state is recorded for the

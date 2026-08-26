@@ -6,5 +6,5 @@ if %errorlevel% neq 0 (
   exit /b
 )
 cd /d %~dp0
-py tools\manual_gui.py
+py -X utf8 tools\manual_gui.py
 pause

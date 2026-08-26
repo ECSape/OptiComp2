@@ -315,6 +315,15 @@ class ProtectedHomeTests(unittest.TestCase):
         self.assertEqual(bus.home("2", force=True), 0)
         self.assertIn(b"2ho0", ser.sent)
 
+    def test_raw_home_to_protected_module_is_refused(self):
+        bus, ser = make_bus({b"2ho0": [b"2PO00000000\r\n"], b"2gp": [b"2PO00004472\r\n"]})
+        bus.protected_home = {"2"}
+        with self.assertRaises(ell.ElliptecError):
+            bus.query("2", "ho", "0")                          # the GUI raw console path
+        self.assertEqual(ser.sent, [])
+        self.assertEqual(bus.home("2", force=True), 0)         # the permitted path still works
+        self.assertIsNone(bus._home_permit)
+
     def test_unprotected_module_homes_normally(self):
         bus, ser = make_bus({b"3ho0": [b"3PO00000000\r\n"], b"3gp": [b"3PO00012008\r\n"]})
         bus.protected_home = {"2"}

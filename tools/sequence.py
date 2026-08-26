@@ -156,7 +156,7 @@ class Runner(object):
         self.spec = spec
         self.outdir = outdir
         self.log = log or (lambda t: None)
-        self.ask_user = ask_user or (lambda msg: True)
+        self.ask_user = ask_user or self._no_operator     # unattended: a pause aborts, it is never auto-confirmed
         self.abort = abort                        # threading.Event or None
         self.progress = progress or (lambda i, n, step: None)
         self._ppd = ppd or {}                     # addr -> pulses per degree (read from IN if missing)
@@ -271,6 +271,10 @@ class Runner(object):
         finally:
             self._write_manifest()
         return self.manifest
+
+    @staticmethod
+    def _no_operator(msg):
+        raise SequenceAbort("pause '%s' needs an operator (no ask_user given); use ask_user=lambda m: True to auto-confirm" % msg)
 
     def restore_it_safely(self):
         """Undo a set_it(save=True) that was not followed by restore_it; never raises."""

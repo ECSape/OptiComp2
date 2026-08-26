@@ -14,6 +14,7 @@ Calls used (same as the original OptiComp, which is known to work with this unit
   bwtekCloseUSB(nChannel), CloseDevices()
 """
 import ctypes
+import os
 import time
 
 import numpy as np
@@ -101,6 +102,11 @@ class BWTek(object):
                                         ctypes.c_void_p(self._buf.ctypes.data), self.channel)
         dt = time.time() - t0
         self._log("bwtekReadResultUSB(avg=%d, sm=%d/%d) -> %d in %.2f s" % (average, smoothing_type, smoothing_value, r, dt))
+        expect = average * (self.integration_ms or 0) / 1000.0
+        if r >= 0 and expect >= 0.5 and dt < 0.5 * expect:
+            self._log("WARNING read took %.2f s for %d x %d ms: integration time not applied by the device?" % (dt, average, self.integration_ms))
+        elif r >= 0 and dt > expect + 5.0:
+            self._log("WARNING read took %.2f s for %d x %d ms: USB stall" % (dt, average, self.integration_ms))
         if r < 0:
             raise BWTekError("bwtekReadResultUSB failed (%d)" % r)
         return self._buf.copy()
@@ -165,10 +171,20 @@ SPEC_USB_VID = "VID_16A3"
 _run = None                                   # injectable for tests (subprocess.run-compatible)
 
 
+def _pnputil_exe():
+    # a 32-bit Python on 64-bit Windows sees System32 redirected to SysWOW64, which has no pnputil
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    for cand in (os.path.join(windir, "Sysnative", "pnputil.exe"), os.path.join(windir, "System32", "pnputil.exe")):
+        if os.path.exists(cand):
+            return cand
+    return "pnputil"
+
+
 def _pnputil(*args):
     import subprocess
     run = _run or subprocess.run
-    cp = run(["pnputil"] + list(args), capture_output=True, text=True, errors="replace", timeout=60)
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    cp = run([_pnputil_exe()] + list(args), capture_output=True, text=True, errors="replace", timeout=60, creationflags=flags)
     return cp.returncode, (cp.stdout or "") + (cp.stderr or "")
 
 
@@ -186,7 +202,12 @@ def usb_instance_ids(vid=SPEC_USB_VID, connected=True):
 
 
 def pnp_restart(instance_id):
-    """pnputil /restart-device <id>; needs an administrator account. Raises BWTekError on failure."""
+    """pnputil /restart-device <id>; needs an administrator account. Raises BWTekError on failure.
+
+    Only the spectrometer itself may be restarted: restarting its hub or the FTDI node would
+    power-cycle the ELLB and make every stage auto-home (2026-08-26)."""
+    if not instance_id.upper().startswith("USB\\" + SPEC_USB_VID.upper()):
+        raise BWTekError("refusing to restart %r: not a %s device (a hub/FTDI restart would power-cycle the stages)" % (instance_id, SPEC_USB_VID))
     rc, out = _pnputil("/restart-device", instance_id)
     if rc != 0:
         hint = " - pnputil needs an elevated process (start the GUI with run_manual_gui.bat, or an admin PowerShell)" if rc != 0 else ""

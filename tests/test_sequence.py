@@ -267,6 +267,15 @@ class SafetyTests(unittest.TestCase):
         self.assertIsNone(r._saved_it)
         self.assertEqual(bus.shutter[-1], "close")
 
+    def test_pause_without_operator_aborts(self):
+        bus, spec = FakeBus(), FakeSpec()
+        r = sq.Runner(bus, spec, self.out, state_path="")                        # no ask_user: unattended
+        with self.assertRaises(sq.SequenceAbort) as cm:
+            r.run(sq.build_double_beam(["S"], 1, "x"))
+        self.assertIn("needs an operator", str(cm.exception))
+        self.assertEqual([m.get("kind") for m in r.manifest], [])               # nothing acquired under the wrong port cover
+        self.assertEqual(bus.shutter[-1], "close")
+
     def test_soft_limits_helper(self):
         self.assertEqual(sq.check_soft_limits(cfg.SYSTEM, 44.0), 44.0)
         with self.assertRaises(ValueError):

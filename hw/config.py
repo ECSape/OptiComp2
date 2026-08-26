@@ -34,7 +34,7 @@ SOFT_LIMITS = {SYSTEM: (0.0, 200.0), SAMPLE: (0.0, 200.0)}
 
 # ---- bus health (2026-08-26 incident: the ELLB is USB-powered; any USB replug power-cycles the
 # modules and ELL14/ELL18 auto-home at power-up, which the fibre-carrying arm cannot survive)
-VELOCITY = {SYSTEM: 32}                     # percent, applied on every connect (original app: 2sv32)
+VELOCITY = {SYSTEM: 50}                     # percent, applied on every connect (original app sent 2sv32 = 0x32 = 50 %)
 PROTECTED_HOME = (SYSTEM,)                  # home() refused unless force=True
 DATA_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
 STATE_FILE = os.path.join(DATA_ROOT, "stage_state.json")   # last known position/status per module
