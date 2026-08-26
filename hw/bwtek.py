@@ -165,6 +165,25 @@ class BWTek(object):
         self._log("recover: USB restart + reopen succeeded")
         return "usb restart"
 
+    def ensure_alive(self, reopen=True):
+        """Bring the DLL session to a known-good state before a measurement.
+
+        The device tends to go stale between runs (a later process sees GetDeviceCount()==0 or
+        reads return -99, 2026-08-26), which previously forced a manual 'recover' click and a GUI
+        restart. Reopening the session at the start of every run makes the connection deterministic;
+        if the reopen fails - the device will not enumerate - it escalates to recover() (a PnP
+        restart). Must be called on the DLL-owning (worker) thread. Returns what it did.
+        """
+        try:
+            if reopen or not self.opened:
+                self.reopen()
+                self._log("ensure_alive: session reopened")
+                return "reopened"
+            return "ok"
+        except BWTekError as e:
+            self._log("ensure_alive: reopen failed (%s); recovering" % e)
+            return self.recover()
+
 
 # ---- Windows PnP helpers (software equivalent of a cable replug for ONE device) ------------
 SPEC_USB_VID = "VID_16A3"

@@ -92,6 +92,15 @@ class SequencePanel(ttk.Frame):
         self.prog_label.grid(row=0, column=0, sticky="w", padx=(0, SPACE["md"]))
         self.bar = ttk.Progressbar(band, mode="determinate")
         self.bar.grid(row=0, column=1, sticky="ew")
+        # reliability toggles (2026-08-27): every run reconnects the spectrometer and zeros every stage,
+        # so the operator no longer power-cycles the USB or reconnects between samples (kept on the band
+        # row to stay within the 720 px height budget). The fibre arm is moved to its zero, never homed.
+        self.autoreconnect_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(band, text="开始前重连光谱仪", variable=self.autoreconnect_var,
+                        style="TCheckbutton").grid(row=0, column=2, sticky="e", padx=(SPACE["md"], 0))
+        self.autoreset_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(band, text="开始前位置归零", variable=self.autoreset_var,
+                        style="TCheckbutton").grid(row=0, column=3, sticky="e", padx=(SPACE["sm"], 0))
         self._set_band_tone("idle")
 
         # ---- session: one full-width row (keeps the page under the 720 px minimum height)
@@ -475,11 +484,21 @@ class SequencePanel(ttk.Frame):
         self.abort.clear()
         self.btn_run.config(state="disabled")
         self.btn_abort.config(state="normal")
-        self.bar["maximum"] = len(self.steps)
-        self.bar["value"] = 0
         steps = list(self.steps)
+        if self.autoreset_var.get():
+            steps = sq.build_reset() + steps          # shutter closed + every stage to its zero (arm via ma, never homed)
         self.job_steps = steps
+        self.bar["maximum"] = len(steps)
+        self.bar["value"] = 0
         bus, spec = self.app.bus, self.app.spectro.spec
+        autoreconnect = self.autoreconnect_var.get()
+
+        def preflight():
+            if autoreconnect:
+                spec.ensure_alive()                   # reopen the DLL session (escalates to recover() on failure)
+
+        def spec_recover():
+            return spec.recover()                     # revive a hung spectrometer between a failed read and its retry
         ppd = {p.addr: p.ppd for p in self.app.panels if p.ppd}
 
         def ask_user(msg):
@@ -517,7 +536,8 @@ class SequencePanel(ttk.Frame):
 
         def job():
             runner = sq.Runner(bus, spec, outdir, log=log, ask_user=ask_user, abort=self.abort, progress=progress,
-                               ppd=ppd, on_spectrum=on_spectrum, state_path=self.app.state_path)
+                               ppd=ppd, on_spectrum=on_spectrum, state_path=self.app.state_path,
+                               preflight=preflight, spec_recover=spec_recover)
             # failures are reported here, not through the worker's generic error path: the panel
             # must always leave the "running" state (buttons, disconnect) whatever happened
             try:

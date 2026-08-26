@@ -93,10 +93,10 @@ class StateTests(unittest.TestCase):
         self.assertEqual(ss.protect(bus), {cfg.SYSTEM})
         logs = []
         ss.apply_velocities(bus, log=logs.append)
-        self.assertEqual(bus.set_vel, [(cfg.SYSTEM, 50)])
+        self.assertEqual(bus.set_vel, [(cfg.SYSTEM, 50), (cfg.SAMPLE, 50)])   # both stages slowed to 50 %
         ss.apply_velocities(bus, log=logs.append)            # already right -> no command
-        self.assertEqual(bus.set_vel, [(cfg.SYSTEM, 50)])
-        self.assertEqual(len(logs), 1)
+        self.assertEqual(bus.set_vel, [(cfg.SYSTEM, 50), (cfg.SAMPLE, 50)])
+        self.assertEqual(len(logs), 2)
 
     def test_corrupt_record_is_ignored(self):
         with open(self.path, "w") as f:

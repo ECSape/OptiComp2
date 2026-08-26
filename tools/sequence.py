@@ -86,6 +86,18 @@ def apply_min_it():
     return Step("apply_min_it", "取 S/P 定标结果中较小的积分时间")
 
 
+def build_reset():
+    """Bring the instrument to a known start state before a run: shutter closed and every
+    rotation stage moved to its defined zero. Absolute moves only - the fibre-carrying detector
+    arm (module 2) is sent to its 44 deg zero with `ma`, never mechanically homed. The runner's
+    unexpected-motion guard still runs on each of these moves (it aborts on the arm if its zero
+    may have been lost), so this reset never overrides that safety check."""
+    return [shutter(False),
+            stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂归零"),
+            stage(cfg.SAMPLE, cfg.SAMPLE_ZERO, "样品台归零"),
+            stage(cfg.POLARISER, 0.0, "偏振片归零")]
+
+
 def build_reference_calibration():
     """Thesis 4.2.3.3 sets the integration time on the reference at 80° / S (its brightest
     point for specular dielectrics). Measured 2026-08-25 on a diffuse reference the P
@@ -150,7 +162,7 @@ class Runner(object):
     """Executes steps. `ask_user(msg)` must block until the operator confirms (False = abort)."""
 
     def __init__(self, bus, spec, outdir, log=None, ask_user=None, abort=None, progress=None, ppd=None, on_spectrum=None,
-                 state_path=None):
+                 state_path=None, preflight=None, spec_recover=None):
         self.bus = bus
         self.state_path = cfg.STATE_FILE if state_path is None else state_path   # "" / False disables
         self.spec = spec
@@ -167,6 +179,8 @@ class Runner(object):
         self.it_candidates = []
         self._saved_it = None
         self.wl = bwtek.wavelengths()
+        self.preflight = preflight                # called once before the first step (e.g. reconnect the spectrometer)
+        self.spec_recover = spec_recover          # called to revive a hung spectrometer between a failed read and its retry
 
     def _check_abort(self):
         if self.abort is not None and self.abort.is_set():
@@ -255,6 +269,8 @@ class Runner(object):
         self.manifest = self.load_manifest(self.outdir)     # append to earlier runs, never overwrite
         n = len(steps)
         try:
+            if self.preflight is not None:
+                self.preflight()                            # e.g. reconnect the spectrometer before acquiring
             for i, st in enumerate(steps):
                 self._check_abort()
                 self.progress(i, n, st)
@@ -343,11 +359,24 @@ class Runner(object):
         else:
             raise ValueError("unknown step kind %s" % st.kind)
 
+    def _read(self, avg, smoothing_type=0, smoothing_value=0):
+        """Read one spectrum; if the spectrometer errors (USB hang / -99) and a recovery hook was
+        given, revive it once and retry so a stalled read does not abort the whole run."""
+        try:
+            return self.spec.read(avg, smoothing_type, smoothing_value)
+        except bwtek.BWTekError as e:
+            if self.spec_recover is None:
+                raise
+            self.log("光谱仪读取失败 (%s)，尝试自动恢复连接…" % e)
+            how = self.spec_recover()
+            self.log("光谱仪已恢复 (%s)，重试本次读取" % how)
+            return self.spec.read(avg, smoothing_type, smoothing_value)
+
     def _auto_it(self):
         it = self.spec.integration_ms or 100
         for k in range(8):
             self._check_abort()
-            counts = self.spec.read(1, 0, 0)
+            counts = self._read(1, 0, 0)
             peak = int(counts[bwtek.ACTIVE_FIRST:bwtek.ACTIVE_LAST + 1].max())
             base = int(counts.min())
             self.log("auto-IT %d: %d ms -> peak %d (%.0f%%)" % (k, it, peak, 100.0 * peak / bwtek.ADC_MAX))
@@ -362,7 +391,7 @@ class Runner(object):
 
     def _acquire(self, tag, avg, meta):
         t0 = time.time()
-        counts = self.spec.read(avg, 0, 0)
+        counts = self._read(avg, 0, 0)
         st = bwtek.spectrum_stats(counts)
         it = self.spec.integration_ms
         # a dark belongs to one integration time: darks at different times must not overwrite each other

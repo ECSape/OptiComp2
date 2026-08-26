@@ -215,6 +215,29 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.dll.time, 997)
         self.assertEqual(int(self.spec.read(1, 0, 0).max()), 65535)   # reads work again
 
+    def test_ensure_alive_reopens_when_healthy(self):
+        # start-of-run reconnect on a working device: just reopen, no pnputil, IT preserved
+        bwtek._run = FakeRun(self.dll)
+        self.dll.time = None
+        self.assertEqual(self.spec.ensure_alive(), "reopened")
+        self.assertEqual(bwtek._run.calls, [])
+        self.assertEqual(self.dll.time, 997)
+        self.assertTrue(self.spec.opened)
+
+    def test_ensure_alive_escalates_to_recover_when_reopen_fails(self):
+        # the device is hung: reopen cannot enumerate it, so ensure_alive falls through to recover()
+        self.dll.hung = True
+        run = FakeRun(self.dll)
+        bwtek._run = run
+        old_sleep = bwtek.time.sleep
+        bwtek.time.sleep = lambda s: None
+        try:
+            self.assertEqual(self.spec.ensure_alive(), "usb restart")
+        finally:
+            bwtek.time.sleep = old_sleep
+        self.assertIn(["/restart-device", "USB\\VID_16A3&PID_2EC8\\6&13b694f9&0&2"], [c[1:] for c in run.calls])
+        self.assertTrue(self.spec.opened)
+
     def test_recover_gives_up_when_device_gone(self):
         self.dll.hung = True
         bwtek._run = FakeRun(self.dll, present=False)

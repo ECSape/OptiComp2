@@ -298,5 +298,64 @@ class SafetyTests(unittest.TestCase):
             self.assertEqual(len(json.load(f)["spectra"]), 1)
 
 
+class ReliabilityFixTests(unittest.TestCase):
+    """2026-08-27 operability fixes: reconnect the spectrometer and zero every stage at the start
+    of each run, and revive a hung spectrometer between a failed read and its retry."""
+
+    def test_build_reset_is_absolute_and_never_homes(self):
+        steps = sq.build_reset()
+        self.assertEqual([s.kind for s in steps], ["shutter", "stage", "stage", "stage"])
+        self.assertFalse(steps[0].params["open"])                 # shutter closed first
+        self.assertNotIn("home", [s.kind for s in steps])         # the fibre arm is moved, never homed
+        stages = [s for s in steps if s.kind == "stage"]
+        self.assertEqual([s.params["addr"] for s in stages], [cfg.SYSTEM, cfg.SAMPLE, cfg.POLARISER])
+        self.assertEqual(next(s for s in stages if s.params["addr"] == cfg.SYSTEM).params["deg"], cfg.SYSTEM_ZERO)
+        self.assertEqual(next(s for s in stages if s.params["addr"] == cfg.SAMPLE).params["deg"], cfg.SAMPLE_ZERO)
+
+    def test_preflight_runs_before_the_first_step(self):
+        out = tempfile.mkdtemp()
+        order = []
+        bus = FakeBus()
+
+        class Watched(FakeSpec):
+            def read(self, avg, st=0, sv=0):
+                order.append("read")
+                return super().read(avg, st, sv)
+
+        sq.Runner(bus, Watched(), out, state_path="",
+                  preflight=lambda: order.append("preflight")).run(sq.build_dark(1))
+        self.assertEqual(order[0], "preflight")                   # reconnect happens before any acquisition
+        self.assertIn("read", order)
+
+    def test_read_recovers_after_spectrometer_error(self):
+        out = tempfile.mkdtemp()
+        recovered = []
+
+        class FlakySpec(FakeSpec):
+            def __init__(self):
+                super(FlakySpec, self).__init__()
+                self.fail_left = 1
+            def read(self, avg, st=0, sv=0):
+                if self.fail_left > 0:
+                    self.fail_left -= 1
+                    raise bwtek.BWTekError("USB read -99")
+                return super(FlakySpec, self).read(avg, st, sv)
+
+        sq.Runner(FakeBus(), FlakySpec(), out, state_path="",
+                  spec_recover=lambda: recovered.append(True) or "reopened").run(
+                      [sq.shutter(False), sq.acquire("dark", 1, kind="dark")])
+        self.assertEqual(recovered, [True])                       # recovery hook fired exactly once
+        self.assertEqual([m["tag"] for m in sq.Runner.load_manifest(out)], ["dark"])   # retry produced the file
+
+    def test_read_error_without_recover_hook_propagates(self):
+        class FlakySpec(FakeSpec):
+            def read(self, avg, st=0, sv=0):
+                raise bwtek.BWTekError("USB read -99")
+
+        r = sq.Runner(FakeBus(), FlakySpec(), tempfile.mkdtemp(), state_path="")
+        with self.assertRaises(bwtek.BWTekError):
+            r.run([sq.shutter(False), sq.acquire("dark", 1, kind="dark")])
+
+
 if __name__ == "__main__":
     unittest.main()

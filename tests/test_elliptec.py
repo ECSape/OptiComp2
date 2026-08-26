@@ -215,10 +215,19 @@ class BusTests(unittest.TestCase):
     def test_mechanical_timeout_twice_raises(self):
         bus, ser = make_bus({b"3ma00011FC7": [b"3GS02\r\n"], b"3gp": [b"3PO00011E7D\r\n"]})
         bus.mech_retry_delay = 0
+        bus.mech_retries = 1                                     # one retry -> two attempts then give up
         with self.assertRaises(ell.DeviceStatusError) as cm:
             bus.move_abs("3", 0x11FC7)
         self.assertEqual(cm.exception.code, 2)
         self.assertEqual(ser.sent.count(b"3ma00011FC7"), 2)
+
+    def test_mechanical_timeout_recovers_within_default_retries(self):
+        # two GS02s then a good move: the default retry budget (3) rides out a couple of stalls
+        bus, ser = make_bus({b"3ma00011FC7": [b"3GS02\r\n", b"3GS02\r\n", b"3PO00011FC7\r\n"],
+                             b"3gp": [b"3PO00011E7D\r\n"]})
+        bus.mech_retry_delay = 0
+        self.assertEqual(bus.move_abs("3", 0x11FC7), 0x11FC7)
+        self.assertEqual(ser.sent.count(b"3ma00011FC7"), 3)
 
     def test_shutter_already_open_is_accepted(self):
         ell6 = b"0IN061060013020201101001F00000000\r\n"

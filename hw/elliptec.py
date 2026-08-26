@@ -158,7 +158,8 @@ class ElliptecBus(object):
         self.attempts = 3                         # resend a swallowed motion command this many times
         self.position_tolerance = 20              # pulses (0.05 deg on ELL14/18): 'at target'
         self.accept_tolerance = 120               # pulses (0.3 deg): accept after corrective moves, with a warning
-        self.mech_retry_delay = 1.0               # seconds before retrying after GS02
+        self.mech_retries = 3                     # times to re-issue a move after GS02 (mechanical time-out)
+        self.mech_retry_delay = 1.0               # base seconds before retrying after GS02 (grows with the attempt)
         self.stray_limit = 3                      # stray / fragmentary lines discarded per query
         self.protected_home = set()               # addresses whose home() needs force=True (fibre arm)
         self._home_permit = None                  # address currently allowed to receive 'ho' (set by home(force=True))
@@ -286,32 +287,44 @@ class ElliptecBus(object):
 
     def _motion_query(self, addr, cmd, data="", expect_position=True, target=None, retry_if_unmoved=True,
                       tolerance=None, accept=None):
-        """Motion command with one automatic retry after a mechanical time-out (GS02)."""
+        """Motion command with automatic retries after a mechanical time-out (GS02).
+
+        A GS02 is the most common transient fault on the loaded ELL18 stages: the move stalls
+        and the stage stays short of target. Re-issuing the absolute move usually completes it,
+        so the command is retried up to `mech_retries` times with a growing back-off before the
+        fault is reported. A blocked home (fibre arm) and non-mechanical faults are never retried.
+        """
         tol = self.position_tolerance if tolerance is None else tolerance
         acc = self.accept_tolerance if accept is None else accept
-        try:
-            return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved, tol, acc)
-        except DeviceStatusError as e:
-            if e.code == BUSY:
-                raise
-            # Observed 2026-08-25: ELL18 reported GS0A (sensor error) at the end of a 106 deg
-            # move that had in fact reached its target. A status code with the stage at the
-            # commanded position is logged, not fatal.
-            if expect_position and target is not None:
-                try:
-                    pos = self.position(addr)
-                except ElliptecError:
-                    pos = None
-                if pos is not None and abs(pos - target) <= tol:
-                    self._log("--", "module %s reported GS %02X (%s) but is at target %d; accepted" % (addr, e.code, STATUS_CODES.get(e.code, "?"), pos))
-                    return pos
-            if e.code != MECHANICAL_TIMEOUT or cmd == "ho":
-                raise                      # a blocked home is never repeated (fibre arm, 2026-08-26)
-            if cmd == "mr" and target is not None:
-                cmd, data = "ma", hex32(target)      # a stalled relative move must not be re-applied from where it stopped
-            self._log("--", "module %s mechanical time-out, retrying once with %s%s after %.0f s" % (addr, cmd, data, self.mech_retry_delay))
-            time.sleep(self.mech_retry_delay)
-            return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved, tol, acc)
+        cur_cmd, cur_data = cmd, data
+        for attempt in range(self.mech_retries + 1):     # attempt 0 = first try, then up to mech_retries retries
+            try:
+                return self._motion_query_once(addr, cur_cmd, cur_data, expect_position, target, retry_if_unmoved, tol, acc)
+            except DeviceStatusError as e:
+                if e.code == BUSY:
+                    raise
+                # Observed 2026-08-25: ELL18 reported GS0A (sensor error) at the end of a 106 deg
+                # move that had in fact reached its target. A status code with the stage at the
+                # commanded position is logged, not fatal.
+                if expect_position and target is not None:
+                    try:
+                        pos = self.position(addr)
+                    except ElliptecError:
+                        pos = None
+                    if pos is not None and abs(pos - target) <= tol:
+                        self._log("--", "module %s reported GS %02X (%s) but is at target %d; accepted" % (addr, e.code, STATUS_CODES.get(e.code, "?"), pos))
+                        return pos
+                if e.code != MECHANICAL_TIMEOUT or cur_cmd == "ho":
+                    raise                      # a blocked home is never repeated (fibre arm, 2026-08-26)
+                if attempt >= self.mech_retries:
+                    raise                      # retries exhausted: report the mechanical time-out
+                if cur_cmd == "mr" and target is not None:
+                    cur_cmd, cur_data = "ma", hex32(target)   # a stalled relative move must not be re-applied from where it stopped
+                delay = self.mech_retry_delay * (attempt + 1)
+                self._log("--", "module %s mechanical time-out (GS02), retry %d/%d with %s%s after %.1f s"
+                          % (addr, attempt + 1, self.mech_retries, cur_cmd, cur_data, delay))
+                time.sleep(delay)
+        raise ElliptecError("module %s: retry loop exhausted" % addr)   # unreachable
 
     def _motion_query_once(self, addr, cmd, data, expect_position, target, retry_if_unmoved, tol, acc):
         """Issue a motion command robustly.

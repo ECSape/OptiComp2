@@ -361,6 +361,13 @@ class DemoSpec(monitor._FakeSpec):
         self._log("recover: reopen succeeded [demo]")
         return "reopened [demo]"
 
+    def ensure_alive(self, reopen=True):
+        if reopen or not self.opened:
+            self.reopen()
+            self._log("ensure_alive: session reopened [demo]")
+            return "reopened [demo]"
+        return "ok [demo]"
+
     def close(self):
         self.opened = False
 
