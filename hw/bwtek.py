@@ -117,6 +117,93 @@ class BWTek(object):
             pass
         self.opened = False
 
+    # ---- recovery (2026-08-26: a read blocked 25 s -> -99; afterwards GetDeviceCount()==0 in every
+    # new process until the USB device was re-enumerated. A PnP restart is the software replug.)
+    def reopen(self, settle=2.0):
+        """Close the DLL session and open it again; re-applies the integration time."""
+        it = self.integration_ms
+        self.close()
+        time.sleep(settle)
+        n = self.open()
+        if it:
+            self.set_integration_time(it)
+        return n
+
+    def recover(self, usb_restart=True, vid=None):
+        """Get a hung spectrometer back without touching the cable.
+
+        1. close + reopen (enough after a transient DLL error);
+        2. Windows PnP restart of the USB device (pnputil), wait for it to re-enumerate, reopen.
+        Returns a short description of what worked; raises BWTekError when nothing did.
+        Only the spectrometer is restarted - never the hub the Elliptec bus hangs on.
+        """
+        try:
+            self.reopen()
+            self._log("recover: reopen succeeded")
+            return "reopened"
+        except BWTekError as e:
+            self._log("recover: reopen failed: %s" % e)
+        if not usb_restart:
+            raise BWTekError("spectrometer lost and reopen failed (USB restart disabled)")
+        vid = vid or SPEC_USB_VID
+        ids = usb_instance_ids(vid)
+        if not ids:
+            raise BWTekError("spectrometer lost and no connected USB device matches %s" % vid)
+        for iid in ids:
+            self._log("recover: pnputil /restart-device %s" % iid)
+            pnp_restart(iid)
+        if not wait_for_device(vid, timeout=20.0):
+            raise BWTekError("spectrometer did not re-enumerate after the PnP restart")
+        time.sleep(3.0)                       # let the CYUSB driver finish loading the firmware
+        self.reopen()                         # raises BWTekError if still lost
+        self._log("recover: USB restart + reopen succeeded")
+        return "usb restart"
+
+
+# ---- Windows PnP helpers (software equivalent of a cable replug for ONE device) ------------
+SPEC_USB_VID = "VID_16A3"
+_run = None                                   # injectable for tests (subprocess.run-compatible)
+
+
+def _pnputil(*args):
+    import subprocess
+    run = _run or subprocess.run
+    cp = run(["pnputil"] + list(args), capture_output=True, text=True, errors="replace", timeout=60)
+    return cp.returncode, (cp.stdout or "") + (cp.stderr or "")
+
+
+def usb_instance_ids(vid=SPEC_USB_VID, connected=True):
+    """Instance IDs of connected USB devices whose ID contains `vid` (e.g. 'VID_16A3')."""
+    args = ["/enum-devices", "/class", "USB"] + (["/connected"] if connected else [])
+    rc, out = _pnputil(*args)
+    ids = []
+    for line in out.splitlines():
+        if ":" in line and line.strip().lower().startswith("instance id"):
+            iid = line.split(":", 1)[1].strip()
+            if vid.upper() in iid.upper():
+                ids.append(iid)
+    return ids
+
+
+def pnp_restart(instance_id):
+    """pnputil /restart-device <id>; needs an administrator account. Raises BWTekError on failure."""
+    rc, out = _pnputil("/restart-device", instance_id)
+    if rc != 0:
+        hint = " - pnputil needs an elevated process (start the GUI with run_manual_gui.bat, or an admin PowerShell)" if rc != 0 else ""
+        raise BWTekError("pnputil /restart-device failed (rc %d): %s%s" % (rc, out.strip()[-300:], hint))
+    return out
+
+
+def wait_for_device(vid=SPEC_USB_VID, timeout=20.0, poll=1.0):
+    """Wait until a connected USB device with `vid` is enumerated again (True) or give up (False)."""
+    t0 = time.time()
+    while True:
+        if usb_instance_ids(vid):
+            return True
+        if time.time() - t0 > timeout:
+            return False
+        time.sleep(poll)
+
 
 def spectrum_stats(counts):
     """Summary used by the GUI: peak, saturated pixel count (whole frame and active region)."""
@@ -133,6 +220,7 @@ def spectrum_stats(counts):
 # ---- integration-time calibration (thesis 4.2.3.3: set on the reference at its brightest point)
 IT_MIN_MS = 1
 IT_MAX_MS = 60000
+AUTO_IT_DARK_MS = 4000      # still no signal at this integration time: nothing to calibrate on
 IT_TARGET = 0.85            # aim the peak at 85 % of full scale
 IT_BAND = (0.78, 0.92)      # accept when the peak lands in this band
 

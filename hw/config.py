@@ -5,6 +5,8 @@ Re-verify these with an alignment check before trusting absolute angles; the ori
 code carried two different sample offsets (103 in stageframework.py, 105 in
 hardwaremanager.py – the VAR scan used 105).
 """
+import os
+
 SHUTTER = "0"
 POLARISER = "1"
 SYSTEM = "2"          # lower stage / detector arm – fibre torsion caution
@@ -29,3 +31,12 @@ THETA_MAX = 80
 STEP_MIN = 1
 
 SOFT_LIMITS = {SYSTEM: (0.0, 200.0), SAMPLE: (0.0, 200.0)}
+
+# ---- bus health (2026-08-26 incident: the ELLB is USB-powered; any USB replug power-cycles the
+# modules and ELL14/ELL18 auto-home at power-up, which the fibre-carrying arm cannot survive)
+VELOCITY = {SYSTEM: 32}                     # percent, applied on every connect (original app: 2sv32)
+PROTECTED_HOME = (SYSTEM,)                  # home() refused unless force=True
+DATA_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+STATE_FILE = os.path.join(DATA_ROOT, "stage_state.json")   # last known position/status per module
+STATE_TOLERANCE_DEG = 0.5                   # a larger jump between sessions = moved without us
+SPEC_USB_VID = "VID_16A3"                   # B&W Tek spectrometer (Cypress CYUSB), for the PnP restart

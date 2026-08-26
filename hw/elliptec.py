@@ -111,11 +111,21 @@ class DeviceInfo(object):
 KNOWN_KINDS = ("IN", "GS", "PO", "HO", "GJ", "SJ", "MA", "MR", "GV", "I1", "I2", "BO", "BS", "PS", "SV")
 
 
+PAYLOAD_LEN = {"IN": 30, "GS": 2, "PO": 8, "HO": 8, "GJ": 8, "SJ": 8, "MA": 8, "MR": 8, "GV": 2}
+
+
 def decode_reply(text):
-    """Decode one reply line (without CR/LF) into a dict."""
+    """Decode one reply line (without CR/LF) into a dict.
+
+    A payload shorter than the protocol defines (a line cut by the read timeout, e.g. '2PO0000')
+    is an error, never a value: pyserial's readline() returns whatever has arrived when the
+    timeout expires mid-reply."""
     if len(text) < 3:
         raise ElliptecError("reply too short: %r" % text)
     addr, kind, payload = text[0], text[1:3], text[3:]
+    need = PAYLOAD_LEN.get(kind)
+    if need is not None and len(payload) < need:
+        raise ElliptecError("truncated %s reply: %r" % (kind, text))
     out = {"addr": addr, "kind": kind, "raw": text}
     if kind == "IN":
         out["info"] = DeviceInfo.from_reply(text)
@@ -150,6 +160,7 @@ class ElliptecBus(object):
         self.accept_tolerance = 120               # pulses (0.3 deg): accept after corrective moves, with a warning
         self.mech_retry_delay = 1.0               # seconds before retrying after GS02
         self.stray_limit = 3                      # stray / fragmentary lines discarded per query
+        self.protected_home = set()               # addresses whose home() needs force=True (fibre arm)
         self._travel = {}                         # addr -> travel from IN (sliders)
 
     # ---- low level ---------------------------------------------------------
@@ -160,12 +171,14 @@ class ElliptecBus(object):
             except Exception:
                 pass
 
-    def query(self, addr, cmd, data="", timeout=None):
+    def query(self, addr, cmd, data="", timeout=None, expect=None):
         """Send one command and return the decoded reply (raises on timeout).
 
         `timeout` overrides the port read timeout for this exchange only. Motion commands
         answer only when the move has finished (an ELL18 at 50 % speed needs ~10 s for
-        100 deg), so they are issued with a long timeout.
+        100 deg), so they are issued with a long timeout. `expect` restricts the reply kinds
+        accepted as the answer (e.g. ("PO",) for gp); other kinds from the same module - a
+        late completion PO in front of a gs answer - are discarded as strays.
         """
         tx = ("%s%s%s" % (addr, cmd, data)).encode("ascii")
         with self._lock:
@@ -179,6 +192,7 @@ class ElliptecBus(object):
             if timeout is not None:
                 self._ser.timeout = timeout
             try:
+                text = ""
                 for _ in range(self.stray_limit + 1):
                     raw = self._ser.readline()
                     text = raw.decode("ascii", "replace").strip()
@@ -188,12 +202,15 @@ class ElliptecBus(object):
                     # A module that finished a move sends its PO on its own. When that lands while we
                     # flush the buffer and send the next poll, a head-truncated fragment ("O00004470")
                     # or a reply to the previous command is read first: discard it and read the real
-                    # answer to *this* command, which the module sends next.
-                    try:
-                        rep = decode_reply(text)
-                        ok = rep["addr"] == str(addr) and rep["kind"] in KNOWN_KINDS
-                    except (ElliptecError, ValueError):
-                        ok = False
+                    # answer to *this* command, which the module sends next. A line without its
+                    # terminator was cut by the read timeout: never decode it.
+                    ok = raw.endswith(b"\n")
+                    if ok:
+                        try:
+                            rep = decode_reply(text)
+                            ok = rep["addr"] == str(addr) and rep["kind"] in KNOWN_KINDS and (expect is None or rep["kind"] in expect)
+                        except (ElliptecError, ValueError):
+                            ok = False
                     if ok:
                         return rep
                     self._log("--", "discarding stray reply %r while talking to %s" % (text, addr))
@@ -203,25 +220,25 @@ class ElliptecBus(object):
 
     # ---- queries -----------------------------------------------------------
     def info(self, addr):
-        rep = self.query(addr, "in")
+        rep = self.query(addr, "in", expect=("IN",))
         if rep["kind"] != "IN":
             raise ElliptecError("expected IN, got %s" % rep["raw"])
         return rep["info"]
 
     def status(self, addr, timeout=None):
-        rep = self.query(addr, "gs", timeout=timeout)
+        rep = self.query(addr, "gs", timeout=timeout, expect=("GS",))
         if rep["kind"] != "GS":
             raise ElliptecError("expected GS, got %s" % rep["raw"])
         return rep["code"]
 
     def position(self, addr):
-        rep = self.query(addr, "gp")
+        rep = self.query(addr, "gp", expect=("PO",))
         if rep["kind"] != "PO":
             raise ElliptecError("expected PO, got %s" % rep["raw"])
         return rep["value"]
 
     def velocity(self, addr):
-        rep = self.query(addr, "gv")
+        rep = self.query(addr, "gv", expect=("GV",))
         return rep.get("percent")
 
     def set_velocity(self, addr, percent):
@@ -251,7 +268,7 @@ class ElliptecBus(object):
         t0 = time.time()
         while True:
             try:
-                rep = self.query(addr, "gs", timeout=self.poll_timeout)
+                rep = self.query(addr, "gs", timeout=self.poll_timeout, expect=("GS", "PO"))
             except ReplyTimeout:
                 rep = None
             if rep is not None:
@@ -284,9 +301,11 @@ class ElliptecBus(object):
                 if pos is not None and abs(pos - target) <= tol:
                     self._log("--", "module %s reported GS %02X (%s) but is at target %d; accepted" % (addr, e.code, STATUS_CODES.get(e.code, "?"), pos))
                     return pos
-            if e.code != MECHANICAL_TIMEOUT:
-                raise
-            self._log("--", "module %s mechanical time-out on %s%s, retrying once after %.0f s" % (addr, cmd, data, self.mech_retry_delay))
+            if e.code != MECHANICAL_TIMEOUT or cmd == "ho":
+                raise                      # a blocked home is never repeated (fibre arm, 2026-08-26)
+            if cmd == "mr" and target is not None:
+                cmd, data = "ma", hex32(target)      # a stalled relative move must not be re-applied from where it stopped
+            self._log("--", "module %s mechanical time-out, retrying once with %s%s after %.0f s" % (addr, cmd, data, self.mech_retry_delay))
             time.sleep(self.mech_retry_delay)
             return self._motion_query_once(addr, cmd, data, expect_position, target, retry_if_unmoved, tol, acc)
 
@@ -304,7 +323,7 @@ class ElliptecBus(object):
         tx_cmd, tx_data = cmd, data
         for attempt in range(1, self.attempts + 1):
             try:
-                rep = self.query(addr, tx_cmd, tx_data, timeout=self.first_wait)
+                rep = self.query(addr, tx_cmd, tx_data, timeout=self.first_wait, expect=("PO", "GS"))
             except ReplyTimeout:
                 rep = None
             if rep is not None:
@@ -350,8 +369,13 @@ class ElliptecBus(object):
             return pos if pos is not None else self.position(addr)
         raise ElliptecError("unexpected reply %s" % rep["raw"])
 
-    def home(self, addr, direction=0):
-        return self._motion_query(addr, "ho", str(direction), target=0)
+    def home(self, addr, direction=0, force=False):
+        """Home a module. Refused for addresses in `protected_home` unless force=True: the
+        fibre-carrying arm may sweep a full turn and wind the fibre (GS02 on 2026-08-25/26)."""
+        if str(addr) in self.protected_home and not force:
+            raise ElliptecError("home on module %s is blocked (fibre-carrying arm); pass force=True "
+                                "only with the fibre slack and an operator watching" % addr)
+        return self._motion_query(addr, "ho", str(direction), target=0, retry_if_unmoved=False)
 
     def move_abs(self, addr, pulses):
         return self._motion_query(addr, "ma", hex32(pulses), target=int(pulses))
@@ -401,5 +425,5 @@ class RotationStage(object):
     def move_rel_deg(self, ddeg):
         return self.pulses_to_deg(self.bus.move_rel(self.addr, int(round(float(ddeg) * self.pulses_per_deg))))
 
-    def home(self):
-        return self.pulses_to_deg(self.bus.home(self.addr, 0))
+    def home(self, force=False):
+        return self.pulses_to_deg(self.bus.home(self.addr, 0, force=force))

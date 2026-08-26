@@ -258,5 +258,68 @@ class BusTests(unittest.TestCase):
         self.assertEqual(st.deg_to_pulses(-90), st.deg_to_pulses(270))
 
 
+class ReplyIntegrityTests(unittest.TestCase):
+    """2026-08-26 review: partial lines and out-of-order kinds must never be taken as answers."""
+
+    def test_truncated_payload_is_an_error(self):
+        for bad in ("2PO0000", "2GS", "3PO", "0IN0E1234"):
+            with self.assertRaises(ell.ElliptecError):
+                ell.decode_reply(bad)
+        self.assertEqual(ell.decode_reply("2GS00")["code"], 0)
+
+    def test_unterminated_fragment_is_discarded(self):
+        # readline() returned a fragment cut by the timeout, the real line follows
+        bus, ser = make_bus({b"2gp": [b"2PO0000", b"2PO00004472\r\n"]})
+        self.assertEqual(bus.position("2"), 0x4472)
+
+    def test_complete_line_without_terminator_is_not_trusted(self):
+        bus, ser = make_bus({b"2gp": [b"2PO00004472", b"2PO00004473\r\n"]})
+        self.assertEqual(bus.position("2"), 0x4473)
+
+    def test_late_po_before_gs_answer_is_skipped(self):
+        # a completion PO arrives just before the answer to our gs
+        bus, ser = make_bus({b"3gs": [b"3PO00011FC7\r\n", b"3GS00\r\n"]})
+        self.assertEqual(bus.status("3"), 0)
+        bus, ser = make_bus({b"3gp": [b"3GS00\r\n", b"3PO00011FC7\r\n"]})
+        self.assertEqual(bus.position("3"), 0x11FC7)
+
+    def test_home_is_never_repeated_after_mechanical_timeout(self):
+        bus, ser = make_bus({b"2ho0": [b"2GS02\r\n"], b"2gp": [b"2PO00000100\r\n"]})
+        bus.mech_retry_delay = 0
+        with self.assertRaises(ell.DeviceStatusError):
+            bus.home("2")
+        self.assertEqual(ser.sent.count(b"2ho0"), 1)             # the blocked fibre arm is not driven again
+        self.assertNotIn(b"2gp", ser.sent[:1])                   # and no 'unmoved -> resend' logic for home
+
+    def test_relative_move_retries_as_absolute(self):
+        bus, ser = make_bus({b"3mr00000100": [b"3GS02\r\n"], b"3ma00011FC7": [b"3PO00011FC7\r\n"],
+                             b"3gp": [b"3PO00011EC7\r\n"]})            # stalled short of the target
+        bus.mech_retry_delay = 0
+        self.assertEqual(bus.move_rel("3", 0x100), 0x11FC7)
+        self.assertEqual(ser.sent.count(b"3mr00000100"), 1)
+        self.assertIn(b"3ma00011FC7", ser.sent)                  # retried towards the original target
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProtectedHomeTests(unittest.TestCase):
+    def test_protected_module_refuses_home_unless_forced(self):
+        bus, ser = make_bus({b"2ho0": [b"2PO00000000\r\n"], b"2gp": [b"2PO00004472\r\n"]})
+        bus.protected_home = {"2"}
+        with self.assertRaises(ell.ElliptecError) as cm:
+            bus.home("2")
+        self.assertIn("blocked", str(cm.exception))
+        self.assertNotIn(b"2ho0", ser.sent)                 # nothing was sent
+        self.assertEqual(bus.home("2", force=True), 0)
+        self.assertIn(b"2ho0", ser.sent)
+
+    def test_unprotected_module_homes_normally(self):
+        bus, ser = make_bus({b"3ho0": [b"3PO00000000\r\n"], b"3gp": [b"3PO00012008\r\n"]})
+        bus.protected_home = {"2"}
+        self.assertEqual(bus.home("3"), 0)
+
+    def test_negative_position_after_power_cycle_decodes(self):
+        rep = ell.decode_reply("1POFFFFFFF9")                 # seen 2026-08-26 after the auto-home
+        self.assertEqual(rep["value"], -7)
