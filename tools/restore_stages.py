@@ -44,10 +44,19 @@ def main(argv=None):
     log("restore start: %s" % vars(args))
 
     if args.arm and not args.yes:
+        ans = ""
+        interactive = False
         try:
-            ans = input("Fibre checked and slack, operator watching the arm? type YES to home module 2: ")
-        except (EOFError, OSError):                 # no console (detached / captured stdin)
-            ans = ""
+            interactive = sys.stdin is not None and sys.stdin.isatty()
+        except Exception:
+            interactive = False
+        if not interactive:                         # detached / SSH without a terminal: nobody is watching the arm
+            log("arm home needs an interactive console (or --yes with an operator present)")
+        else:
+            try:
+                ans = input("Fibre checked and slack, operator watching the arm? type YES to home module 2: ")
+            except (EOFError, OSError):             # console closed under us
+                ans = ""
         if ans.strip() != "YES":
             log("arm home not confirmed - aborting")
             return 2
