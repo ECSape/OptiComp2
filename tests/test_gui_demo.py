@@ -32,7 +32,7 @@ HAS_DISPLAY = _has_display()
 PARITY = [
     ("app", ["connect", "disconnect", "query_all", "bus_forward", "bus_backward", "bus_home", "close_shutter", "set_shutter",
              "update_module", "refresh_status", "submit", "toggle_log", "show_page", "_apply_lock", "_log_line", "_on_close",
-             "panels", "statusbar", "sidebar", "log_drawer", "raw_disclosure", "pages", "spectro", "sequence", "analysis",
+             "panels", "statusbar", "sidebar", "log_drawer", "raw_section", "pages", "spectro", "sequence", "analysis",
              "bus", "bus_port", "sequence_running", "shutter_state", "stage_deg", "stage_status", "stage_vel", "health_problems",
              "health_done_count", "theme", "demo", "data_root", "state_path"]),
     ("app.spectro", ["open_dev", "set_it", "read_once", "it_var", "it_chosen", "last", "spec", "worker", "results", "btn_open",

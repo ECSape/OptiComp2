@@ -650,6 +650,33 @@ def tooltip(widget, text, **kw):
     return widget
 
 
+class Section(ttk.Frame):
+    """Always-visible titled area: a hairline, a caption title and self.body below it. Used where
+    nothing may be hidden from the operator (the operator asked for no collapsible 高级 areas).
+    Exposes open()/close()/is_open as no-ops so callers written for Disclosure keep working."""
+
+    def __init__(self, parent, title="高级", on_card=True, **kw):
+        kw.setdefault("style", "CardBody.TFrame" if on_card else "TFrame")
+        ttk.Frame.__init__(self, parent, **kw)
+        self.title = title
+        self.columnconfigure(0, weight=1)
+        ttk.Separator(self, orient="horizontal").grid(row=0, column=0, sticky="ew", pady=(SPACE["sm"], SPACE["xs"]))
+        self.label = ttk.Label(self, text=title, style="Card.Caption.TLabel" if on_card else "Caption.TLabel", anchor="w")
+        self.label.grid(row=1, column=0, sticky="w", pady=(0, SPACE["xs"]))
+        self.body = ttk.Frame(self, style="CardBody.TFrame" if on_card else "TFrame")
+        self.body.grid(row=2, column=0, sticky="nsew")
+
+    def open(self):
+        pass
+
+    def close(self):
+        pass
+
+    @property
+    def is_open(self):
+        return True
+
+
 class Disclosure(ttk.Frame):
     """Collapsible area: a Disclosure.TButton header showing '▸ 高级' / '▾ 高级' and self.body below it.
     on_toggle(is_open) is called after every change. The body is grid-forgotten when closed so the

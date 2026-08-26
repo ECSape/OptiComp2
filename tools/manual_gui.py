@@ -30,10 +30,10 @@ from hw import config as cfg
 from hw import stagestate
 import sequence as sq
 import ui_theme
-from ui_theme import SPACE, COLORS, Card, StatusPill, Disclosure, Banner, form_row, unit_label, bind_enter, bind_shortcut, tooltip, empty_state
+from ui_theme import SPACE, COLORS, Card, StatusPill, Section, Banner, form_row, unit_label, bind_enter, bind_shortcut, tooltip, empty_state
 
 DEFAULT_PORT = "COM4"
-__version__ = "1.0"         # shown in the title bar and log header so the running build is unambiguous
+__version__ = "1.1"         # shown in the title bar and log header so the running build is unambiguous
 PAGE_PAD = (SPACE["xl"], SPACE["md"], SPACE["xl"], SPACE["md"])
 
 # Device roles on the OptiComp bus (from stageframework.py + thesis chapter 4). Angles are the
@@ -195,29 +195,27 @@ class DevicePanel(Card):
                 form.columnconfigure(c, weight=0)
             form.columnconfigure(2, weight=1)
 
-        # ---- advanced (protocol-level) actions
-        self.advanced = Disclosure(body, title="高级", opened=False)
+        # ---- advanced (protocol-level) actions: always visible, one compact row
+        self.advanced = Section(body, title="高级")
         self.advanced.grid(row=row, column=0, sticky="ew")
         adv = self.advanced.body
         br = ttk.Frame(adv, style="CardBody.TFrame")
-        br.grid(row=0, column=0, sticky="w", pady=(0, SPACE["xs"]))
+        br.grid(row=0, column=0, sticky="w")
         for text, cmd, key, st in (("信息", self.do_info, "info", "TButton"), ("状态", self.do_status, "status", "TButton"),
                                    ("位置", self.do_position, "position", "TButton"), ("回零", self.do_home, "home", "Destructive.TButton")):
             b = ttk.Button(br, text=text, command=cmd, style=st)
             b.pack(side="left", padx=(0, SPACE["sm"]))
             self._buttons.append(tooltip(b, TIPS[key]))
         if spec["kind"] == "rotation":
-            vf = ttk.Frame(adv, style="CardBody.TFrame")
-            vf.grid(row=1, column=0, sticky="w", pady=(SPACE["xs"], 0))
             self.vel_var = tk.StringVar(value="100")
-            sp = ttk.Spinbox(vf, from_=10, to=100, increment=10, textvariable=self.vel_var, width=5, justify="right")
+            sp = ttk.Spinbox(br, from_=10, to=100, increment=10, textvariable=self.vel_var, width=5, justify="right")
             bind_enter(sp, self.do_set_velocity)
-            b_set = ttk.Button(vf, text="设置速度", command=self.do_set_velocity)
-            b_get = ttk.Button(vf, text="读取速度", command=self.do_get_velocity)
+            b_set = ttk.Button(br, text="设置速度", command=self.do_set_velocity)
+            b_get = ttk.Button(br, text="读取速度", command=self.do_get_velocity)
             self._buttons += [tooltip(b_set, TIPS["set_vel"]), tooltip(b_get, TIPS["get_vel"])]
-            ttk.Label(vf, text="速度", style="FormLabel.TLabel", width=8, anchor="e").pack(side="left", padx=(0, SPACE["sm"]))
+            ttk.Label(br, text="速度", style="FormLabel.TLabel", anchor="e").pack(side="left", padx=(SPACE["md"], SPACE["sm"]))
             sp.pack(side="left")
-            ttk.Label(vf, text="%", style="Card.Caption.TLabel").pack(side="left", padx=(SPACE["xs"], SPACE["sm"]))
+            ttk.Label(br, text="%", style="Card.Caption.TLabel").pack(side="left", padx=(SPACE["xs"], SPACE["sm"]))
             b_set.pack(side="left", padx=(0, SPACE["sm"]))
             b_get.pack(side="left")
 
@@ -682,9 +680,9 @@ class App(tk.Tk):
             p = DevicePanel(body, self, spec)
             p.grid(row=i // 2, column=i % 2, sticky="nsew", padx=(0, SPACE["md"]) if i % 2 == 0 else 0, pady=(0, SPACE["md"]))
             self.panels.append(p)
-        self.raw_disclosure = Disclosure(page, title="高级：原始命令", opened=False, on_card=False)
-        self.raw_disclosure.grid(row=2, column=0, sticky="ew")
-        raw = Card(self.raw_disclosure.body, padding=SPACE["md"])
+        self.raw_section = Section(page, title="高级：原始命令", on_card=False)
+        self.raw_section.grid(row=2, column=0, sticky="ew")
+        raw = Card(self.raw_section.body, padding=SPACE["md"])
         raw.grid(row=0, column=0, sticky="ew")
         rb = raw.body
         self.raw_var = tk.StringVar()
@@ -1240,8 +1238,9 @@ def _mac_can_record_screen():
         return True
 
 
-def capture(root, path, log=None):
-    """Save a PNG of the window. macOS: screencapture (needs the Screen Recording permission; without it
+def capture(root, path, log=None, synthetic=False):
+    """Save a PNG of the window. synthetic=True skips the screen grab (it would include whatever
+    other windows overlap the GUI) and writes the geometry-faithful render only. macOS: screencapture (needs the Screen Recording permission; without it
     the PNG would only contain the wallpaper, so a geometry-faithful synthetic render is written instead).
     Windows/Linux: PIL.ImageGrab. Returns 'screen' | 'render' | None."""
     log = log or (lambda t: None)
@@ -1250,7 +1249,9 @@ def capture(root, path, log=None):
     time.sleep(0.4)
     root.update()
     x, y, w, h = root.winfo_rootx(), root.winfo_rooty(), root.winfo_width(), root.winfo_height()
-    if sys.platform == "darwin":
+    if synthetic:
+        pass
+    elif sys.platform == "darwin":
         if _mac_can_record_screen():
             import subprocess
             r = subprocess.run(["screencapture", "-x", "-R", "%d,%d,%d,%d" % (x, y, w, h), path])
@@ -1298,7 +1299,8 @@ class ScreenshotTour(object):
     STATIONS = ["01_instrument_idle", "02_instrument_connected", "03_motors", "04_motors_advanced", "05_spectrometer",
                 "06_measure_queue", "07_measure_running", "08_measure_done", "09_analysis", "10_log_drawer", "11_instrument_warning"]
 
-    def __init__(self, app, outdir, capture_png=True, close=True, anomaly=None):
+    def __init__(self, app, outdir, capture_png=True, close=True, anomaly=None, synthetic=False):
+        self.synthetic = synthetic
         self.app = app
         self.outdir = outdir
         self.capture_png = capture_png and outdir is not None
@@ -1331,7 +1333,7 @@ class ScreenshotTour(object):
             return
         os.makedirs(self.outdir, exist_ok=True)
         path = os.path.join(self.outdir, name + ".png")
-        how = capture(self.app, path, log=self.app._log_line)
+        how = capture(self.app, path, log=self.app._log_line, synthetic=self.synthetic)
         self.app._log_line("SHOT %s (%s)" % (path, how))
         self.shots.append(path)
 
@@ -1372,12 +1374,10 @@ class ScreenshotTour(object):
         app.show_page("motors")
         self.pump(0.2)
         self.shot(self.STATIONS[2])
-        app.panels[2].advanced.open()
-        app.raw_disclosure.open()
+        app.panels[2].advanced.open()          # no-ops: 高级 is always visible since 1.1
+        app.raw_section.open()
         self.pump(0.2)
         self.shot(self.STATIONS[3])
-        app.panels[2].advanced.close()
-        app.raw_disclosure.close()
         app.show_page("spectro")
         sp.read_once()
         self.wait_for(lambda: sp.last is not None, 15, "single read")
@@ -1431,9 +1431,9 @@ class ScreenshotTour(object):
         self.shot(self.STATIONS[10])
 
 
-def run_screenshot_tour(app, outdir, capture=True, close=True):
+def run_screenshot_tour(app, outdir, capture=True, close=True, synthetic=False):
     """Spec 7.4: drive the demo through every station; returns the exit code (0 ok, 1 on timeout/failure)."""
-    return ScreenshotTour(app, outdir, capture_png=capture, close=close).run()
+    return ScreenshotTour(app, outdir, capture_png=capture, close=close, synthetic=synthetic).run()
 
 
 def main(argv=None):
@@ -1442,6 +1442,7 @@ def main(argv=None):
     ap.add_argument("--demo", action="store_true", help="fake hardware (never opens COM4 or the spectrometer DLL)")
     ap.add_argument("--screenshot", metavar="DIR", default=None, help="with --demo: drive the GUI through the workflow and save PNGs to DIR")
     ap.add_argument("--no-capture", action="store_true", help="run the screenshot tour without writing PNGs")
+    ap.add_argument("--render", action="store_true", help="with --screenshot: synthetic renders only, never grab the screen")
     args = ap.parse_args(argv)
     if args.screenshot and not args.demo:
         ap.error("--screenshot requires --demo (never drives real hardware unattended)")
@@ -1452,7 +1453,7 @@ def main(argv=None):
         state = {"rc": 0}
 
         def start():
-            state["rc"] = run_screenshot_tour(app, args.screenshot, capture=not args.no_capture)
+            state["rc"] = run_screenshot_tour(app, args.screenshot, capture=not args.no_capture, synthetic=args.render)
         app.after(400, start)
         app.mainloop()
         return state["rc"]
