@@ -208,8 +208,9 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(self.spec.recover(), "usb restart")
         finally:
             bwtek.time.sleep = old_sleep
-        self.assertEqual(run.calls[0][:3], ["pnputil", "/enum-devices", "/class"])
-        self.assertIn(["pnputil", "/restart-device", "USB\\VID_16A3&PID_2EC8\\6&13b694f9&0&2"], run.calls)
+        self.assertTrue(os.path.basename(run.calls[0][0]).lower().startswith("pnputil"))   # resolved path on Windows
+        self.assertEqual(run.calls[0][1:3], ["/enum-devices", "/class"])
+        self.assertIn(["/restart-device", "USB\\VID_16A3&PID_2EC8\\6&13b694f9&0&2"], [c[1:] for c in run.calls])
         self.assertTrue(self.spec.opened)
         self.assertEqual(self.dll.time, 997)
         self.assertEqual(int(self.spec.read(1, 0, 0).max()), 65535)   # reads work again
