@@ -3,3 +3,14 @@ __pycache__/
 *.log
 logs/
 data/
+
+# LaTeX build artefacts and page renders (docs/thesis)
+docs/thesis/*.aux
+docs/thesis/*.log
+docs/thesis/*.out
+docs/thesis/*.fls
+docs/thesis/*.fdb_latexmk
+docs/thesis/*.toc
+docs/thesis/build.log
+docs/thesis/page-*.png
+docs/thesis/fig-*.png
