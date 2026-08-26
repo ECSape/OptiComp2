@@ -14,3 +14,6 @@ docs/thesis/*.toc
 docs/thesis/build.log
 docs/thesis/page-*.png
 docs/thesis/fig-*.png
+
+# macOS
+.DS_Store
