@@ -17,6 +17,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from hw import bwtek
 from hw import config as cfg
+from hw import stagestate
 
 
 class Step(object):
@@ -91,7 +92,7 @@ def build_reference_calibration():
     channel was 12 % brighter, so both polarisations are calibrated and the smaller
     integration time is kept."""
     return [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂零位"), sample_theta(cfg.THETA_MAX), shutter(True),
-            polariser("S"), auto_it(), polariser("P"), auto_it(), apply_min_it()]
+            polariser("S"), auto_it(), polariser("P"), auto_it(), apply_min_it(), shutter(False)]
 
 
 def build_dark(avg, tag="dark"):
@@ -103,6 +104,7 @@ def build_single_angle(theta, pols, avg, prefix):
     for pol in pols:
         steps += [polariser(pol), sample_theta(theta), shutter(True),
                   acquire("%s_%s_%g" % (prefix, pol, theta), avg, kind="var", pol=pol, theta=float(theta))]
+    steps.append(shutter(False))
     return steps
 
 
@@ -136,11 +138,21 @@ def build_double_beam(pols, avg, prefix):
 
 
 # ---- runner -------------------------------------------------------------------
+def check_soft_limits(addr, deg):
+    """Raise ValueError when `deg` lies outside the configured soft limits of module `addr`."""
+    lim = cfg.SOFT_LIMITS.get(str(addr))
+    if lim and not (lim[0] <= deg <= lim[1]):
+        raise ValueError("stage %s target %.2f° outside soft limits %s" % (addr, deg, lim))
+    return deg
+
+
 class Runner(object):
     """Executes steps. `ask_user(msg)` must block until the operator confirms (False = abort)."""
 
-    def __init__(self, bus, spec, outdir, log=None, ask_user=None, abort=None, progress=None, ppd=None, on_spectrum=None):
+    def __init__(self, bus, spec, outdir, log=None, ask_user=None, abort=None, progress=None, ppd=None, on_spectrum=None,
+                 state_path=None):
         self.bus = bus
+        self.state_path = cfg.STATE_FILE if state_path is None else state_path   # "" / False disables
         self.spec = spec
         self.outdir = outdir
         self.log = log or (lambda t: None)
@@ -167,13 +179,13 @@ class Runner(object):
         return self._ppd[addr]
 
     def _move(self, addr, deg):
-        lim = cfg.SOFT_LIMITS.get(addr)
-        if lim and not (lim[0] <= deg <= lim[1]):
-            raise ValueError("stage %s target %.2f° outside soft limits %s" % (addr, deg, lim))
+        check_soft_limits(addr, deg)
         ppd = self._ppd_for(addr)
+        self._check_unexpected_motion(addr, ppd)
         pulses = self.bus.move_abs(addr, int(round((deg % 360.0) * ppd)))
         actual = (pulses / ppd) % 360.0
         self.positions[addr] = actual
+        self._record_state(addr, pulses)
         err = abs(((actual - deg + 180) % 360) - 180)
         if err > 0.3:
             # the bus layer already retried; a wrong angle must abort, never be measured
@@ -181,6 +193,44 @@ class Runner(object):
         if err > 0.05:
             self.log("WARNING stage %s settled at %.3f° (target %.3f°, off by %.3f°); actual angle recorded" % (addr, actual, deg, actual - deg))
         return actual
+
+    def _check_unexpected_motion(self, addr, ppd):
+        """Before moving: has the module moved since we last commanded it (power cycle -> auto-home,
+        hand rotation)? Warn for any module; abort for the fibre arm, whose zero would be lost."""
+        ref = self.positions.get(addr)
+        if ref is None and self.state_path:           # first move of this run: compare with the on-disk record
+            rec = (stagestate.load(self.state_path) or {}).get("modules", {}).get(str(addr))
+            if rec and rec.get("position") is not None:
+                ref = (rec["position"] / ppd) % 360.0
+        if ref is None:
+            return
+        try:
+            now = (self.bus.position(addr) / ppd) % 360.0
+        except Exception as e:
+            self.log("WARNING could not read position of stage %s before moving: %s" % (addr, e))
+            return
+        diff = abs(((now - ref + 180) % 360) - 180)
+        if diff <= cfg.STATE_TOLERANCE_DEG:
+            return
+        msg = "stage %s is at %.2f° but was left at %.2f° - moved without us (bus power cycle / auto-home / hand rotation?)" % (
+            addr, now, ref)
+        if addr == cfg.SYSTEM:
+            raise RuntimeError(msg + " - detector arm zero may be lost; sequence aborted")
+        self.log("WARNING " + msg)
+
+    def _record_state(self, addr, pulses, status=0):
+        """Update the on-disk record of where the modules are (no serial traffic)."""
+        if not self.state_path:
+            return
+        try:
+            doc = stagestate.load(self.state_path) or {}
+            mods = dict(doc.get("modules", {}))
+            rec = dict(mods.get(str(addr), {}))
+            rec.update({"position": int(pulses), "status": int(status)})
+            mods[str(addr)] = rec
+            stagestate.save(mods, self.state_path, note="runner move %s" % addr)
+        except Exception as e:                        # bookkeeping must never abort a measurement
+            self.log("WARNING could not record stage state: %s" % e)
 
     @staticmethod
     def load_manifest(outdir):
@@ -191,21 +241,66 @@ class Runner(object):
         try:
             with open(path, encoding="utf-8") as f:
                 return list(json.load(f).get("spectra", []))
-        except (ValueError, OSError):
+        except ValueError:
+            # unreadable manifest: keep it for forensics instead of silently overwriting it
+            aside = path + time.strftime(".corrupt_%Y%m%d_%H%M%S")
+            try:
+                os.replace(path, aside)
+            except OSError:
+                pass
             return []
 
     def run(self, steps):
         os.makedirs(self.outdir, exist_ok=True)
         self.manifest = self.load_manifest(self.outdir)     # append to earlier runs, never overwrite
         n = len(steps)
-        for i, st in enumerate(steps):
-            self._check_abort()
-            self.progress(i, n, st)
-            self.log("[%d/%d] %s" % (i + 1, n, st.text))
-            self.run_step(st)
-        self.progress(n, n, None)
-        self._write_manifest()
+        try:
+            for i, st in enumerate(steps):
+                self._check_abort()
+                self.progress(i, n, st)
+                self.log("[%d/%d] %s" % (i + 1, n, st.text))
+                self.run_step(st)
+            self.progress(n, n, None)
+        except BaseException:
+            # abort / error with the shutter open would leave the lamp on the sample and the
+            # detector: close it before the exception reaches the GUI; a temporary (double-beam)
+            # integration time must not survive the failed run either
+            self.close_shutter_safely()
+            self.restore_it_safely()
+            raise
+        finally:
+            self._write_manifest()
         return self.manifest
+
+    def restore_it_safely(self):
+        """Undo a set_it(save=True) that was not followed by restore_it; never raises."""
+        if not self._saved_it:
+            return True
+        try:
+            self.spec.set_integration_time(self._saved_it)
+            self.log("integration time restored to %d ms (safety)" % self._saved_it)
+            self._saved_it = None
+            return True
+        except Exception as e:
+            self.log("WARNING could not restore the integration time to %s ms: %s" % (self._saved_it, e))
+            return False
+
+    def close_shutter_safely(self):
+        """Close the shutter unless it is known to be closed; never raises."""
+        if self.shutter_open is False:
+            return True
+        for attempt in (1, 2):
+            try:
+                pos = self.bus.backward(cfg.SHUTTER)
+                self.shutter_open = False
+                self._record_state(cfg.SHUTTER, pos if pos is not None else 0)
+                self.log("shutter closed (safety)")
+                return True
+            except Exception as e:
+                self.log("WARNING closing the shutter failed (attempt %d): %s" % (attempt, e))
+                time.sleep(1.0)
+        self.log("!!!! SHUTTER MAY STILL BE OPEN - close it manually (0bw) !!!!")
+        return False
 
     def run_step(self, st):
         """Execute one step (used by run() and by tools that need single verified actions)."""
@@ -214,10 +309,11 @@ class Runner(object):
             self._move(p["addr"], p["deg"])
         elif st.kind == "shutter":
             if p["open"]:
-                self.bus.forward(cfg.SHUTTER)
+                pos = self.bus.forward(cfg.SHUTTER)
             else:
-                self.bus.backward(cfg.SHUTTER)
+                pos = self.bus.backward(cfg.SHUTTER)
             self.shutter_open = p["open"]
+            self._record_state(cfg.SHUTTER, pos if pos is not None else (31 if p["open"] else 0))
         elif st.kind == "set_it":
             if p.get("save"):
                 self._saved_it = self.spec.integration_ms
@@ -254,27 +350,31 @@ class Runner(object):
             self.on_spectrum({"tag": "auto-IT %d ms" % it, "integration_ms": it, "peak": peak, "preview_only": True}, counts)
             if bwtek.peak_in_band(peak):
                 return it
+            if peak - base < 50 and it >= bwtek.AUTO_IT_DARK_MS:
+                raise RuntimeError("auto-IT: no light at %d ms (shutter closed? lamp off? fibre?)" % it)
             it = bwtek.next_integration_time(it, peak, base)
             self.spec.set_integration_time(it)
-        self.log("WARNING auto-IT did not converge; using %d ms" % it)
-        return it
+        raise RuntimeError("auto-IT did not converge in 8 steps (last %d ms, peak %d)" % (it, peak))
 
     def _acquire(self, tag, avg, meta):
         t0 = time.time()
         counts = self.spec.read(avg, 0, 0)
         st = bwtek.spectrum_stats(counts)
-        rec = {"tag": tag, "time": time.strftime("%Y-%m-%d %H:%M:%S"), "integration_ms": self.spec.integration_ms,
+        it = self.spec.integration_ms
+        # a dark belongs to one integration time: darks at different times must not overwrite each other
+        fname = "%s_%dms.csv" % (tag, it) if meta.get("kind") == "dark" else tag + ".csv"
+        rec = {"tag": tag, "time": time.strftime("%Y-%m-%d %H:%M:%S"), "integration_ms": it,
                "average": avg, "shutter_open": self.shutter_open,
                "polariser_deg": self.positions.get(cfg.POLARISER), "system_deg": self.positions.get(cfg.SYSTEM),
                "sample_deg": self.positions.get(cfg.SAMPLE), "peak": st["max"], "saturated_active": st["saturated_active"],
-               "file": tag + ".csv", "read_seconds": round(time.time() - t0, 2)}
+               "file": fname, "read_seconds": round(time.time() - t0, 2)}
         rec.update(meta)
         path = os.path.join(self.outdir, rec["file"])
         np.savetxt(path, np.column_stack([self.wl, counts]), fmt="%.3f,%d", header="wavelength_nm,counts", comments="")
-        stale = [r for r in self.manifest if r.get("tag") == tag]
+        stale = [r for r in self.manifest if r.get("file") == fname]
         if stale:                                   # the CSV was just overwritten: drop records that described it
-            self.manifest = [r for r in self.manifest if r.get("tag") != tag]
-            self.log("replacing %d earlier record(s) of %s" % (len(stale), tag))
+            self.manifest = [r for r in self.manifest if r.get("file") != fname]
+            self.log("replacing %d earlier record(s) of %s" % (len(stale), fname))
         self.manifest.append(rec)
         self._write_manifest()
         self.on_spectrum(rec, counts)
@@ -283,8 +383,11 @@ class Runner(object):
         return counts
 
     def _write_manifest(self):
-        with open(os.path.join(self.outdir, "manifest.json"), "w", encoding="utf-8") as f:
+        path = os.path.join(self.outdir, "manifest.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:              # write-then-rename: never a half-written manifest
             json.dump({"created": time.strftime("%Y-%m-%d %H:%M:%S"), "config": {
                 "POL_DEG": cfg.POL_DEG, "SAMPLE_VAR_OFFSET": cfg.SAMPLE_VAR_OFFSET, "SYSTEM_ZERO": cfg.SYSTEM_ZERO,
                 "SYSTEM_DB": cfg.SYSTEM_DB, "SAMPLE_DB": cfg.SAMPLE_DB},
                 "spectra": self.manifest}, f, indent=1, ensure_ascii=False)
+        os.replace(tmp, path)

@@ -12,7 +12,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
 from hw import config as cfg
 from hw import bwtek
+from hw import stagestate
 import sequence as sq
+
+cfg.STATE_FILE = os.path.join(tempfile.mkdtemp(), "stage_state.json")   # never touch the real record
 
 
 class FakeInfo(object):
@@ -22,12 +25,17 @@ class FakeInfo(object):
 class FakeBus(object):
     def __init__(self):
         self.moves, self.shutter = [], []
+        self.pos = {}
 
     def info(self, addr):
         return FakeInfo()
 
+    def position(self, addr):
+        return self.pos.get(addr, 0)
+
     def move_abs(self, addr, pulses):
         self.moves.append((addr, pulses))
+        self.pos[addr] = pulses
         return pulses
 
     def forward(self, addr):
@@ -77,10 +85,14 @@ class BuilderTests(unittest.TestCase):
         smp = [s for s in steps if s.params.get("addr") == cfg.SAMPLE][0]
         self.assertEqual(pol.params["deg"], cfg.POL_DEG["S"])
         self.assertEqual(smp.params["deg"], 80 + cfg.SAMPLE_VAR_OFFSET)
-        self.assertEqual([s.kind for s in steps[-5:]], ["stage", "auto_it", "stage", "auto_it", "apply_min_it"])
+        self.assertEqual([s.kind for s in steps[-6:]], ["stage", "auto_it", "stage", "auto_it", "apply_min_it", "shutter"])
+        self.assertFalse(steps[-1].params["open"])                                         # never leaves the shutter open
 
 
 class RunnerTests(unittest.TestCase):
+    def setUp(self):
+        cfg.STATE_FILE = os.path.join(tempfile.mkdtemp(), "stage_state.json")   # fresh record per test
+
     def test_reacquired_tag_replaces_earlier_record(self):
         bus, spec = FakeBus(), FakeSpec()
         out = tempfile.mkdtemp()
@@ -114,7 +126,9 @@ class RunnerTests(unittest.TestCase):
         self.assertNotEqual(spec.integration_ms, cfg.DB_IT_MS)
         with open(os.path.join(out, "manifest.json")) as f:
             self.assertEqual(len(json.load(f)["spectra"]), 4)
-        d = np.loadtxt(os.path.join(out, "dark.csv"), delimiter=",", skiprows=1)
+        self.assertEqual(man[0]["file"], "dark_%dms.csv" % man[0]["integration_ms"])       # darks are per integration time
+        self.assertEqual(man[3]["file"], "dark_db_%dms.csv" % cfg.DB_IT_MS)
+        d = np.loadtxt(os.path.join(out, man[0]["file"]), delimiter=",", skiprows=1)
         self.assertEqual(d.shape, (2048, 2))
 
     def test_manifest_appends_across_runs_and_preview_hook(self):
@@ -143,6 +157,136 @@ class RunnerTests(unittest.TestCase):
             sq.Runner(bus, spec, out, abort=ev).run(sq.build_dark(1))
         with self.assertRaises(sq.SequenceAbort):
             sq.Runner(bus, spec, out, ask_user=lambda m: False).run([sq.pause("x")])
+
+
+class StateBookkeepingTests(unittest.TestCase):
+    def setUp(self):
+        self.state = os.path.join(tempfile.mkdtemp(), "stage_state.json")
+
+    def test_moves_and_shutter_are_recorded(self):
+        bus, out = FakeBus(), tempfile.mkdtemp()
+        sq.Runner(bus, FakeSpec(), out, state_path=self.state).run(sq.build_single_angle(60, ["S"], 1, "x"))
+        doc = json.load(open(self.state))
+        self.assertEqual(doc["modules"][cfg.SAMPLE]["position"], int(round(165 * 143360 / 360.0)))
+        self.assertEqual(doc["modules"][cfg.SYSTEM]["position"], int(round(44 * 143360 / 360.0)))
+        self.assertIn(cfg.SHUTTER, doc["modules"])
+
+    def test_arm_moved_without_us_aborts(self):
+        bus, out = FakeBus(), tempfile.mkdtemp()
+        stagestate.save({cfg.SYSTEM: {"position": int(round(44 * 143360 / 360.0)), "status": 0}}, self.state)
+        bus.pos[cfg.SYSTEM] = int(round(11 * 143360 / 360.0))          # module reports 11 deg (auto-home blocked)
+        logs = []
+        with self.assertRaises(RuntimeError) as cm:
+            sq.Runner(bus, FakeSpec(), out, log=logs.append, state_path=self.state).run([sq.stage(cfg.SYSTEM, 44, "arm")])
+        self.assertIn("moved without us", str(cm.exception))
+        self.assertEqual(bus.moves, [])                                 # nothing was moved
+
+    def test_sample_moved_without_us_warns_and_continues(self):
+        bus, out = FakeBus(), tempfile.mkdtemp()
+        stagestate.save({cfg.SAMPLE: {"position": int(round(185 * 143360 / 360.0)), "status": 0}}, self.state)
+        bus.pos[cfg.SAMPLE] = int(round(103 * 143360 / 360.0))
+        logs = []
+        sq.Runner(bus, FakeSpec(), out, log=logs.append, state_path=self.state).run([sq.sample_theta(60)])
+        self.assertTrue(any("moved without us" in l for l in logs))
+        self.assertEqual(len(bus.moves), 1)
+
+    def test_consistent_position_is_silent(self):
+        bus, out = FakeBus(), tempfile.mkdtemp()
+        stagestate.save({cfg.SAMPLE: {"position": int(round(185 * 143360 / 360.0)), "status": 0}}, self.state)
+        bus.pos[cfg.SAMPLE] = int(round(185.1 * 143360 / 360.0))
+        logs = []
+        sq.Runner(bus, FakeSpec(), out, log=logs.append, state_path=self.state).run([sq.sample_theta(60)])
+        self.assertFalse(any("moved without us" in l for l in logs))
+
+    def test_state_disabled(self):
+        bus, out = FakeBus(), tempfile.mkdtemp()
+        sq.Runner(bus, FakeSpec(), out, state_path="").run([sq.sample_theta(60)])
+        self.assertFalse(os.path.exists(self.state))
+
+
+class SafetyTests(unittest.TestCase):
+    """The Runner must never leave the shutter open or lose the manifest when a run fails."""
+
+    def setUp(self):
+        cfg.STATE_FILE = os.path.join(tempfile.mkdtemp(), "stage_state.json")
+        self.out = tempfile.mkdtemp()
+
+    def test_error_with_shutter_open_closes_it(self):
+        bus, spec = FakeBus(), FakeSpec()
+
+        def boom(*a, **k):
+            raise RuntimeError("DLL hang")
+        spec.read = boom
+        r = sq.Runner(bus, spec, self.out, state_path="")
+        with self.assertRaises(RuntimeError):
+            r.run([sq.shutter(True), sq.acquire("x", 1, kind="var")])
+        self.assertEqual(bus.shutter, ["open", "close"])
+        self.assertFalse(r.shutter_open)
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "manifest.json")))
+
+    def test_abort_at_pause_closes_shutter(self):
+        bus, spec = FakeBus(), FakeSpec()
+        r = sq.Runner(bus, spec, self.out, ask_user=lambda m: False, state_path="")
+        with self.assertRaises(sq.SequenceAbort):
+            r.run([sq.shutter(True), sq.pause("swap")])
+        self.assertEqual(bus.shutter[-1], "close")
+
+    def test_shutter_known_closed_is_not_touched(self):
+        bus, spec = FakeBus(), FakeSpec()
+        r = sq.Runner(bus, spec, self.out, ask_user=lambda m: False, state_path="")
+        with self.assertRaises(sq.SequenceAbort):
+            r.run([sq.shutter(False), sq.pause("swap")])
+        self.assertEqual(bus.shutter, ["close"])
+
+    def test_auto_it_without_light_aborts(self):
+        bus, spec = FakeBus(), FakeSpec(level=0)
+        r = sq.Runner(bus, spec, self.out, state_path="")
+        with self.assertRaises(RuntimeError) as cm:
+            r.run([sq.shutter(True), sq.auto_it()])
+        self.assertIn("no light", str(cm.exception))
+        self.assertLessEqual(spec.integration_ms, 4 * bwtek.AUTO_IT_DARK_MS)   # gave up early, not at 60 s
+        self.assertEqual(bus.shutter[-1], "close")
+
+    def test_darks_per_integration_time_do_not_collide(self):
+        bus, spec = FakeBus(), FakeSpec()
+        r = sq.Runner(bus, spec, self.out, state_path="")
+        r.run([sq.set_it(100), sq.shutter(False), sq.acquire("dark", 1, kind="dark"),
+               sq.set_it(997), sq.acquire("dark", 1, kind="dark"),
+               sq.set_it(100), sq.acquire("dark", 1, kind="dark")])
+        files = sorted(rec["file"] for rec in r.manifest)
+        self.assertEqual(files, ["dark_100ms.csv", "dark_997ms.csv"])          # the 100 ms dark was replaced, 997 kept
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "dark_997ms.csv")))
+
+    def test_abort_inside_double_beam_restores_integration_time(self):
+        bus, spec = FakeBus(), FakeSpec()
+        spec.set_integration_time(500)                                           # calibrated session IT
+        r = sq.Runner(bus, spec, self.out, ask_user=lambda m: False, state_path="")
+        with self.assertRaises(sq.SequenceAbort):
+            r.run(sq.build_double_beam(["S"], 1, "x"))                          # cancelled at the first pause
+        self.assertEqual(spec.integration_ms, 500)                               # not left at DB_IT_MS
+        self.assertIsNone(r._saved_it)
+        self.assertEqual(bus.shutter[-1], "close")
+
+    def test_soft_limits_helper(self):
+        self.assertEqual(sq.check_soft_limits(cfg.SYSTEM, 44.0), 44.0)
+        with self.assertRaises(ValueError):
+            sq.check_soft_limits(cfg.SYSTEM, 220.0)
+        with self.assertRaises(ValueError):
+            sq.check_soft_limits(cfg.SAMPLE, -1.0)
+        self.assertEqual(sq.check_soft_limits(cfg.POLARISER, 359.0), 359.0)     # unlimited module
+
+    def test_corrupt_manifest_is_kept_aside(self):
+        path = os.path.join(self.out, "manifest.json")
+        with open(path, "w") as f:
+            f.write("{not json")
+        self.assertEqual(sq.Runner.load_manifest(self.out), [])
+        self.assertFalse(os.path.exists(path))
+        self.assertTrue([n for n in os.listdir(self.out) if n.startswith("manifest.json.corrupt_")])
+        r = sq.Runner(FakeBus(), FakeSpec(), self.out, state_path="")
+        r.run([sq.shutter(False), sq.acquire("dark", 1, kind="dark")])
+        self.assertFalse(os.path.exists(path + ".tmp"))                          # atomic write leaves no temp file
+        with open(path) as f:
+            self.assertEqual(len(json.load(f)["spectra"]), 1)
 
 
 if __name__ == "__main__":

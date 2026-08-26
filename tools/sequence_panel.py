@@ -248,11 +248,13 @@ class SequencePanel(ttk.Frame):
         outdir = os.path.join(DATA_ROOT, self.session_var.get().strip() or time.strftime("session_%Y%m%d_%H%M%S"))
         # integration time consistency: a restarted GUI defaults to 100 ms, but the session's
         # spectra must all share one integration time unless the queue sets it explicitly
-        first_acq = next((i for i, s in enumerate(self.steps) if s.kind == "acquire" and s.params.get("meta", {}).get("kind") == "var"), None)
+        first_acq = next((i for i, s in enumerate(self.steps) if s.kind == "acquire" and s.params.get("meta", {}).get("kind") in ("var", "dark")), None)
         sets_it = any((s.kind == "set_it" and not s.params.get("save")) or s.kind in ("auto_it", "apply_min_it")
                       for s in self.steps[:first_acq]) if first_acq is not None else True
         session_its = [r["integration_ms"] for r in sq.Runner.load_manifest(outdir) if r.get("kind") == "var"]
-        if first_acq is not None and not sets_it and not session_its and not self.app.spectro.it_chosen:
+        # a spectrometer still at the double-beam time after an aborted DB block is not a chosen value
+        db_leftover = self.app.spectro.spec.integration_ms == cfg.DB_IT_MS and cfg.DB_IT_MS not in session_its
+        if first_acq is not None and not sets_it and not session_its and (not self.app.spectro.it_chosen or db_leftover):
             # new session, GUI restarted, nothing set the integration time yet -> offer the last one used anywhere
             last = self._last_session_it()
             hint = ("最近的会话 %s 用的是 %d ms。是否在队列开头插入『积分时间 %d ms』？\n（选否则按 %s ms 采集，取消则不运行）"
@@ -331,7 +333,15 @@ class SequencePanel(ttk.Frame):
         def job():
             runner = sq.Runner(bus, spec, outdir, log=log, ask_user=ask_user, abort=self.abort, progress=progress,
                                ppd=ppd, on_spectrum=on_spectrum)
-            return runner.run(steps)
+            # failures are reported here, not through the worker's generic error path: the panel
+            # must always leave the "running" state (buttons, disconnect) whatever happened
+            try:
+                return runner.run(steps)
+            except sq.SequenceAbort as e:
+                self.events.put(("failed", ("已中止", str(e), runner.shutter_open)))
+            except Exception as e:
+                self.events.put(("failed", ("失败", "%s: %s" % (type(e).__name__, e), runner.shutter_open)))
+            return None
 
         self.app.spectro.worker.submit("sequence", job, self._done)
 
@@ -340,8 +350,18 @@ class SequencePanel(ttk.Frame):
         self.prog_var.set("中止中…(等待当前步骤结束)")
 
     def _done(self, manifest):
+        if manifest is None:               # reported through the "failed" event
+            return
         self._finish("完成: %d 个光谱已保存" % len(manifest))
         self.clear()                       # a finished queue must not silently run again
+
+    def _failed(self, title, msg, shutter_open):
+        self._finish("%s: %s" % (title, msg))
+        extra = "" if shutter_open is False else "\n\n注意：快门状态未知，请在电机页确认已关闭 (0bw)。"
+        if title == "已中止":
+            messagebox.showwarning("序列已中止", msg + extra)
+        else:
+            messagebox.showerror("序列失败", msg + "\n\n队列保留，可修正后重新运行。" + extra)
 
     # ---- progress marks / history / preview ---------------------------------
     def _mark_progress(self, current):
@@ -399,7 +419,8 @@ class SequencePanel(ttk.Frame):
 
     def _finish(self, text):
         self.running = False
-        if any(s.kind in ("set_it", "auto_it", "apply_min_it") for s in self.job_steps):
+        # only a deliberate (non-temporary) integration-time step counts as "chosen"
+        if any((s.kind == "set_it" and not s.params.get("save")) or s.kind in ("auto_it", "apply_min_it") for s in self.job_steps):
             self.app.spectro.it_chosen = True
         self.app.sequence_running = False
         self.btn_run.config(state="normal")
@@ -425,6 +446,8 @@ class SequencePanel(ttk.Frame):
                     self._show_spectrum(*payload)
                 elif kind == "call":
                     payload()
+                elif kind == "failed":
+                    self._failed(*payload)
         except queue.Empty:
             pass
         self.after(100, self._poll)

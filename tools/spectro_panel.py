@@ -56,6 +56,8 @@ class SpectrometerPanel(ttk.Frame):
         self.btn_open.pack(side="left")
         self.btn_close = ttk.Button(ctl, text="关闭", command=self.close_dev, state="disabled")
         self.btn_close.pack(side="left", padx=4)
+        self.btn_recover = ttk.Button(ctl, text="恢复 (重开/USB 重启)", command=self.recover_dev, state="disabled")
+        self.btn_recover.pack(side="left", padx=4)
         self.state_var = tk.StringVar(value="未初始化")
         ttk.Label(ctl, textvariable=self.state_var, foreground="#a00").pack(side="left", padx=8)
 
@@ -112,12 +114,30 @@ class SpectrometerPanel(ttk.Frame):
         self.results.put(("ok", "log", None, lambda _v, t=text: self.app._log_line("SPEC " + t)))
 
     def open_dev(self):
+        try:
+            ms = int(self.it_var.get())               # parsed on the Tk thread, never inside the worker
+        except ValueError:
+            messagebox.showerror("输入错误", "积分时间需为整数毫秒")
+            return
+        if ms < 1:
+            messagebox.showerror("输入错误", "积分时间需 ≥ 1 ms")
+            return
+
         def job():
             spec = bwtek.BWTek(log=self._log)
             n = spec.open()
-            spec.set_integration_time(int(self.it_var.get()))
+            try:
+                spec.set_integration_time(ms)
+            except Exception:
+                try:
+                    spec.close()                      # never leave an orphaned, initialised DLL handle
+                except Exception:
+                    pass
+                self.results.put(("ok", "spec open failed", None, lambda _v: self.btn_open.config(state="normal")))
+                raise
             return spec, n
         self.state_var.set("初始化中…")
+        self.btn_open.config(state="disabled")        # one open job at a time
         self.worker.submit("spec open", job, self._opened)
 
     def _opened(self, res):
@@ -125,6 +145,20 @@ class SpectrometerPanel(ttk.Frame):
         self.state_var.set("已连接 (%d 台), IT %d ms" % (n, self.spec.integration_ms))
         self.btn_open.config(state="disabled")
         self.btn_close.config(state="normal")
+        self.btn_recover.config(state="normal")
+
+    def recover_dev(self):
+        """Spectrometer hung (-99 / not found): close + reopen, then a PnP restart of its USB device
+        (pnputil, admin) - the software equivalent of a replug that leaves the Elliptec hub alone."""
+        if not self._need():
+            return
+        self.worker.live.clear()
+        self._stop_monitor()
+        self.btn_live.config(text="连续读取")
+        self.state_var.set("恢复中…")
+        spec = self.spec
+        self.worker.submit("spec recover", lambda: spec.recover(),
+                           lambda how: self.state_var.set("已恢复 (%s), IT %s ms" % (how, spec.integration_ms)))
 
     def close_dev(self):
         if getattr(self.app, "sequence_running", False):
@@ -138,6 +172,7 @@ class SpectrometerPanel(ttk.Frame):
             self.worker.submit("spec close", s.close, lambda _: self.state_var.set("已关闭"))
         self.btn_open.config(state="normal")
         self.btn_close.config(state="disabled")
+        self.btn_recover.config(state="disabled")
         self.btn_live.config(text="连续读取")
 
     def _need(self):
@@ -157,9 +192,10 @@ class SpectrometerPanel(ttk.Frame):
         except ValueError:
             messagebox.showerror("输入错误", "积分时间需为整数毫秒")
             return
-        self.it_chosen = True
-        self.worker.submit("spec set IT", lambda: self.spec.set_integration_time(ms),
-                           lambda r: self.state_var.set("已连接, IT %d ms" % r))
+        def done(r):
+            self.it_chosen = True                     # only once the device really accepted it
+            self.state_var.set("已连接, IT %d ms" % r)
+        self.worker.submit("spec set IT", lambda: self.spec.set_integration_time(ms), done)
 
     def _read_args(self):
         avg = max(1, int(self.avg_var.get() or 1))
@@ -284,10 +320,11 @@ class SpectrometerPanel(ttk.Frame):
                 self._log("auto-IT step %d: IT %d ms -> peak %d (%.0f%%), baseline %d" % (step, it, peak, 100.0 * peak / bwtek.ADC_MAX, base))
                 if bwtek.peak_in_band(peak):
                     return it, counts
+                if peak - base < 50 and it >= bwtek.AUTO_IT_DARK_MS:
+                    raise RuntimeError("auto-IT: no light at %d ms (shutter closed? lamp off? fibre?)" % it)
                 it = bwtek.next_integration_time(it, peak, base)
                 spec.set_integration_time(it)
-            counts = spec.read(1, *sm)
-            return it, counts
+            raise RuntimeError("auto-IT did not converge in 8 steps (last %d ms, peak %d)" % (it, peak))
 
         self.state_var.set("自动定标中…")
         self.worker.submit("spec auto-IT", job, self._auto_it_done)
@@ -320,6 +357,7 @@ class SpectrometerPanel(ttk.Frame):
                     self.app._log_line("!! %s failed: %s" % (label, value))
                     if label == "spec open":
                         self.state_var.set("初始化失败")
+                        self.btn_open.config(state="normal")
                     if label == "spec live":
                         self.worker.live.clear()
                         self.btn_live.config(text="连续读取")
@@ -332,12 +370,20 @@ class SpectrometerPanel(ttk.Frame):
             pass
         self.after(100, self._poll)
 
-    def shutdown(self):
+    def shutdown(self, timeout=5.0):
+        """Close the device on the spectrometer worker (the DLL is not thread-safe); wait at most
+        `timeout` s so a wedged DLL cannot keep the window open forever."""
         self.worker.live.clear()
         self._stop_monitor()
         if self.spec:
-            try:
-                self.spec.close()
-            except Exception:
-                pass
+            s, done = self.spec, threading.Event()
             self.spec = None
+
+            def job():
+                try:
+                    s.close()
+                finally:
+                    done.set()
+            self.worker.submit("spec close (exit)", job)
+            if not done.wait(timeout):
+                self.app._log_line("!! spectrometer close did not finish within %.0f s (DLL busy?)" % timeout)

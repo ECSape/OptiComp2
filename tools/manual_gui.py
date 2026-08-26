@@ -19,9 +19,11 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from hw import elliptec as ell
 from hw import config as cfg
+from hw import stagestate
+import sequence as sq
 
 DEFAULT_PORT = "COM4"
-__version__ = "0.17"        # shown in the title bar and log header so the running build is unambiguous
+__version__ = "0.19"        # shown in the title bar and log header so the running build is unambiguous
 
 # Device roles on the OptiComp bus (from stageframework.py + thesis chapter 4).
 DEVICES = [
@@ -207,10 +209,18 @@ class DevicePanel(ttk.LabelFrame):
             return
         if abs(ddeg) > 30 and not messagebox.askyesno("大角度相对移动", "相对移动 %.2f°，继续？" % ddeg):
             return
-        pulses = int(round(ddeg * self.ppd))
+        addr, ppd, bus = self.addr, self.ppd, self.app.bus
+
+        def job():
+            # executed as an absolute move to (current + delta): the target is checked against the
+            # soft limits and a stalled move is never re-applied from where it stopped
+            start = bus.position(addr) / ppd
+            target = start + ddeg
+            sq.check_soft_limits(addr, target)          # ValueError -> shown by the generic error path
+            return bus.move_abs(addr, int(round((target % 360.0) * ppd)))
         self.stat_var.set("状态: 运动中… %+.2f°" % ddeg)
         self._t0 = time.time()
-        self.app.submit("%s mr %+.2f°" % (self.addr, ddeg), lambda: self.app.bus.move_rel(self.addr, pulses), self._after_motion)
+        self.app.submit("%s mr %+.2f° (as ma)" % (self.addr, ddeg), job, self._after_motion)
 
     def do_set_velocity(self):
         try:
@@ -312,12 +322,49 @@ class App(tk.Tk):
         self.btn_connect.config(state="disabled")
         self.btn_disconnect.config(state="normal")
         self._log_line("--- opened %s ---" % port)
+        self._bus_health()
+
+    def _bus_health(self):
+        """Right after connecting: protect the fibre arm from home(), compare the modules with the
+        last recorded state (a USB replug power-cycles the ELLB and the modules auto-home), set the
+        configured speeds. Runs on the worker thread; the verdict is shown on the Tk thread."""
+        bus = self.bus
+        wlog = lambda t: self._log_serial("--", t)        # worker thread -> marshal to Tk
+
+        def job():
+            stagestate.protect(bus)
+            ppd = {}
+            for a in (cfg.POLARISER, cfg.SYSTEM, cfg.SAMPLE):
+                info = bus.info(a)
+                ppd[a] = float(info.pulses) / info.travel
+            problems, live = stagestate.check(bus, ppd=ppd, log=wlog)
+            stagestate.apply_velocities(bus, log=wlog)
+            self.ppd = ppd
+            return problems, live
+
+        def done(res):
+            problems, live = res
+            self._log_line("stage state: " + ", ".join(
+                "%s=%s%s" % (a, live[a].get("deg", live[a]["position"]), "" if live[a]["status"] == 0 else "/GS%02X" % live[a]["status"])
+                for a in sorted(live)))
+            if problems:
+                lost = stagestate.arm_reference_lost(live)
+                messagebox.showwarning("电机状态异常", "连接后发现模块与上次记录不一致：\n\n%s\n\n%s" % (
+                    "\n".join("• " + p for p in problems),
+                    "探测臂(2)回零失败：零位已丢失，理顺光纤后在旁边盯着执行回零，再移到 44°。" if lost else
+                    "可能原因：USB 插拔/供电抖动使总线掉电，模块上电自动回零；或有人手动转动。请核对后再运动。"))
+        self.worker.submit("bus health", job, done)
 
     def disconnect(self):
         if self.sequence_running:
             messagebox.showwarning("序列运行中", "请先中止序列")
             return
         if self.bus:
+            try:
+                stagestate.record(self.bus, note="gui disconnect", ppd=getattr(self, "ppd", None))
+                self._log_line("stage state recorded")
+            except Exception as e:
+                self._log_line("WARNING could not record stage state: %s" % e)
             self.bus.close()
             self.bus = None
         self.conn_var.set("未连接")
@@ -339,7 +386,7 @@ class App(tk.Tk):
         return self.bus.backward(addr)
 
     def bus_home(self, addr):
-        return self.bus.home(addr, 0)
+        return self.bus.home(addr, 0, force=True)      # the panel has already asked the operator
 
     # ---- jobs --------------------------------------------------------------
     def submit(self, label, fn, callback=None):
@@ -406,8 +453,37 @@ class App(tk.Tk):
                 f.write("\n".join(self.log_lines) + "\n")
 
     def _on_close(self):
-        self.spectro.shutdown()
-        self.disconnect()
+        """Orderly exit: abort a running sequence, close the shutter and record the stage state
+        on the hardware worker (bounded wait), close the spectrometer on its own worker, then
+        close the port. The DLL and the serial port are never touched from the Tk thread while a
+        worker may be inside them."""
+        if self.sequence_running:
+            if not messagebox.askyesno("序列运行中", "序列仍在运行。仍要退出？（将请求中止并关闭快门）"):
+                return
+            self.sequence.abort.set()
+        self.spectro.worker.live.clear()
+        self.spectro._stop_monitor()
+        if self.bus is not None:
+            bus, done = self.bus, threading.Event()
+
+            def job():
+                try:
+                    bus.backward(cfg.SHUTTER)
+                    self._log_line("shutter closed on exit")
+                    stagestate.record(bus, note="gui exit", ppd=getattr(self, "ppd", None))
+                finally:
+                    done.set()
+            self.worker.submit("exit: shutter close + state record", job)
+            if not done.wait(30.0):
+                self._log_line("!! exit: hardware worker busy for 30 s; shutter state unknown - check 0bw")
+        self.sequence_running = False
+        self.spectro.shutdown(timeout=5.0)
+        if self.bus is not None:
+            try:
+                self.bus.close()
+            except Exception:
+                pass
+            self.bus = None
         self.destroy()
 
 
