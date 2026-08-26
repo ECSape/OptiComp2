@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Tk tab that builds and runs measurement sequences (uses sequence.py)."""
+"""Tk page that builds and runs measurement sequences (uses sequence.py).
+
+Layout: page header (运行 / 中止) + progress band, a session card and an add-step card on the left,
+the step queue on the right, and the completed-acquisition table + live preview below. The logic
+(queue editing, the seven run() guards in their original order, the Runner on the spectrometer
+worker, event polling) is unchanged from the notebook version; only presentation moved.
+"""
 import os
 import queue
 import sys
@@ -8,143 +14,310 @@ import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, ".."))
 import sequence as sq
 from hw import bwtek
 from hw import config as cfg
+import ui_theme
+from ui_theme import SPACE, COLORS, Card, form_row, unit_label, bind_enter, tooltip, empty_state
 
-DATA_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+DATA_ROOT = os.path.join(HERE, "..", "data")      # default; the App may point elsewhere (--demo)
+PAGE_PAD = (SPACE["xl"], SPACE["md"], SPACE["xl"], SPACE["md"])
+SUBTITLE = "组合步骤、运行序列，并查看本会话已完成的采集。"
+GEOMETRY = "几何: S=%g° P=%g° · 样品台=θ+%g° · 探测臂零位 %g° · DB %g°/%g°" % (
+    cfg.POL_DEG["S"], cfg.POL_DEG["P"], cfg.SAMPLE_VAR_OFFSET, cfg.SYSTEM_ZERO, cfg.SYSTEM_DB, cfg.SAMPLE_DB)
+
+TIPS = {
+    "run": "运行整个队列（Ctrl+R / ⌘R）。运行前会依次检查：串口与光谱仪、积分时间、已有数据、重复标签，最后确认。",
+    "abort": "请求中止（Esc）：当前步骤结束后停止，Runner 会关闭快门并恢复临时积分时间。",
+    "load": "读取 data/<会话名>/manifest.json，把已完成的采集列在下方表格里；运行前也会自动读取。",
+    "ref": "探测臂→44°，样品台→θ=80°，快门开，S 与 P 各自动定标，取较小的积分时间，快门关。参考件应为白板/标准件。",
+    "dark": "快门关后采集一张暗底，文件按积分时间命名（dark_<IT>ms.csv）。",
+    "single": "在给定 θ 采集所选偏振各一张：探测臂零位 → 偏振片 → 样品台 θ+105° → 快门开 → 采集 → 快门关。",
+    "scan": "对 起…止 每隔 步 度重复单角度测量；偏振片每个偏振只转一次。要求 0 ≤ 起 < 止 ≤ 80，步 ≥ 1。",
+    "db": "双光束替代修正：先到交换位并暂停等你换积分球端口盖，再到 DB 位（探测臂 124° / 样品台 93°）以 1000 ms 采集 S/P 与暗底，最后换回并复位。",
+    "set_it": "在队列中插入「积分时间 N ms」（永久设置，会被记为已选定）。",
+    "pause": "插入一个暂停：运行到这里时弹出提示，点确定继续、取消则中止。",
+    "shutter": "插入单独的快门步骤（通常不需要：测量步骤自带开关快门）。",
+    "geometry": "来自 hw/config.py：POL_DEG、SAMPLE_VAR_OFFSET、SYSTEM_ZERO、SYSTEM_DB、SAMPLE_DB。",
+    "remove": "删除队列中选中的步骤（运行中不可用）。",
+    "clear": "清空整个队列（运行中不可用）。",
+}
+
+_BAND_TONES = {"idle": "text2", "running": "text", "paused": "warning_text", "done": "success_text",
+               "aborted": "warning_text", "failed": "danger_pressed"}
 
 
 class SequencePanel(ttk.Frame):
     def __init__(self, master, app):
-        ttk.Frame.__init__(self, master, padding=6)
+        ttk.Frame.__init__(self, master, style="Page.TFrame", padding=PAGE_PAD)
         self.app = app
         self.steps = []
         self.job_steps = []
         self.events = queue.Queue()
         self.abort = threading.Event()
         self.running = False
+        self.done_tags = set()
+        self._edit_buttons = []
+        self._empty_text = None
         self._build()
         self.after(100, self._poll)
 
     # ---- layout ------------------------------------------------------------
-    def _build(self):
-        left = ttk.LabelFrame(self, text="步骤队列 (0 步, 0 次采集)", padding=6)
-        left.grid(row=0, column=0, sticky="nsew", padx=4)
-        self.queue_frame = left
-        self.listbox = tk.Listbox(left, width=52, height=22, font=("Consolas", 9))
-        self.listbox.pack(fill="both", expand=True)
-        b = ttk.Frame(left)
-        b.pack(fill="x", pady=4)
-        ttk.Button(b, text="删除选中", command=self.remove_selected).pack(side="left")
-        ttk.Button(b, text="清空", command=self.clear).pack(side="left", padx=4)
+    def _data_root(self):
+        return getattr(self.app, "data_root", None) or DATA_ROOT
 
-        right = ttk.Frame(self)
-        right.grid(row=0, column=1, sticky="nsew", padx=4)
+    def _build(self):
+        px = self.app.theme.px
         self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=1)
-        self.rowconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(3, weight=1)                   # steps | queue
+        self.rowconfigure(4, weight=1)                   # done | preview
+        self.header = ui_theme.PageHeader(self, "测量", SUBTITLE,
+                                          actions=[("▶ 运行序列", self.run, "Primary.TButton"), ("■ 中止", self.abort_run, "Destructive.TButton")])
+        self.header.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["md"]))
+        self.btn_run = self.header.buttons["▶ 运行序列"]
+        self.btn_abort = self.header.buttons["■ 中止"]
+        self.btn_abort.configure(state="disabled")
+        tooltip(self.btn_run, TIPS["run"])
+        tooltip(self.btn_abort, TIPS["abort"])
+
+        # ---- progress band
+        band = ttk.Frame(self, style="Page.TFrame")
+        band.grid(row=1, column=0, sticky="ew", pady=(0, SPACE["md"]))
+        band.columnconfigure(1, weight=1)
+        self.prog_var = tk.StringVar(value="空闲")
+        self.prog_label = ttk.Label(band, textvariable=self.prog_var, style="TLabel", anchor="w")
+        self.prog_label.grid(row=0, column=0, sticky="w", padx=(0, SPACE["md"]))
+        self.bar = ttk.Progressbar(band, mode="determinate")
+        self.bar.grid(row=0, column=1, sticky="ew")
+        self._set_band_tone("idle")
+
+        # ---- session: one full-width row (keeps the page under the 720 px minimum height)
+        self._build_session_card(self)
+
+        # ---- main row: add-steps card (left, natural width) + queue (right, takes the slack)
+        main = ttk.Frame(self, style="Page.TFrame")
+        main.grid(row=3, column=0, sticky="nsew", pady=(0, SPACE["md"]))
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(0, weight=1)
+        self._build_steps_card(main)
+        self._build_queue_card(main)
 
         # ---- bottom row: completed acquisitions (left) + live preview (right)
-        done = ttk.LabelFrame(self, text="已完成的采集 (本会话目录)", padding=6)
-        done.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-        cols = ("time", "tag", "theta", "pol", "it", "peak", "sat")
-        self.done_tree = ttk.Treeview(done, columns=cols, show="headings", height=8)
-        for c, w, t in zip(cols, (70, 130, 45, 35, 60, 60, 40), ("时间", "标签", "θ°", "偏振", "IT ms", "峰值%", "饱和")):
-            self.done_tree.heading(c, text=t)
-            self.done_tree.column(c, width=w, anchor="center")
-        sb = ttk.Scrollbar(done, orient="vertical", command=self.done_tree.yview)
-        self.done_tree.configure(yscrollcommand=sb.set)
-        self.done_tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        self.done_frame = done
-        self.done_tags = set()
+        bottom = ttk.Frame(self, style="Page.TFrame")
+        bottom.grid(row=4, column=0, sticky="nsew")
+        bottom.columnconfigure(0, weight=3)
+        bottom.columnconfigure(1, weight=2)
+        bottom.rowconfigure(0, weight=1)
+        self._build_done_card(bottom, px)
+        self._build_preview_card(bottom, px)
 
-        prev = ttk.LabelFrame(self, text="实时预览", padding=4)
-        prev.grid(row=1, column=1, sticky="nsew", padx=4, pady=4)
+    def _build_session_card(self, parent):
+        card = Card(parent)                              # one labelled row; a title would only repeat 会话
+        card.grid(row=2, column=0, sticky="ew", pady=(0, SPACE["md"]))
+        self.session_card = card
+        row = ttk.Frame(card.body, style="CardBody.TFrame")
+        row.grid(row=0, column=0, sticky="w")
+        ttk.Label(row, text="会话/样品名", style="FormLabel.TLabel").pack(side="left", padx=(0, SPACE["sm"]))
+        self.session_var = tk.StringVar(value=time.strftime("session_%Y%m%d_%H%M"))
+        e = ttk.Entry(row, textvariable=self.session_var, width=18)
+        e.pack(side="left")
+        bind_enter(e, self.load_history)
+        self.btn_load = ttk.Button(row, text="载入已有记录", command=self.load_history, style="Ghost.TButton")
+        self.btn_load.pack(side="left", padx=(SPACE["xs"], 0))
+        tooltip(self.btn_load, TIPS["load"])
+        ttk.Label(row, text="文件标签前缀", style="FormLabel.TLabel").pack(side="left", padx=(SPACE["xl"], SPACE["sm"]))
+        self.prefix_var = tk.StringVar(value="sample")
+        ttk.Entry(row, textvariable=self.prefix_var, width=8).pack(side="left")
+        ttk.Label(row, text="平均次数", style="FormLabel.TLabel").pack(side="left", padx=(SPACE["lg"], SPACE["sm"]))
+        self.avg_var = tk.StringVar(value="3")
+        ttk.Spinbox(row, from_=1, to=50, textvariable=self.avg_var, width=3, justify="right").pack(side="left")
+        ttk.Label(row, text="次", style="Card.Caption.TLabel").pack(side="left", padx=(SPACE["xs"], 0))
+        ttk.Label(row, text="偏振", style="FormLabel.TLabel").pack(side="left", padx=(SPACE["lg"], SPACE["sm"]))
+        self.pol_var = tk.StringVar(value="S+P")
+        ttk.Combobox(row, textvariable=self.pol_var, values=["S", "P", "S+P"], state="readonly", width=4).pack(side="left")
+
+    def _build_steps_card(self, parent):
+        card = Card(parent, title="添加步骤", subtitle=GEOMETRY)
+        card.grid(row=0, column=0, sticky="nsew", padx=(0, SPACE["md"]))
+        tooltip(card.subtitle_label, TIPS["geometry"])
+        self.steps_card = card
+        f = card.body
+        pady = 1
+
+        def button(parent_, text, cmd, tip, style="TButton"):
+            b = ttk.Button(parent_, text=text, command=cmd, style=style)
+            tooltip(b, TIPS[tip])
+            self._edit_buttons.append(b)
+            return b
+
+        # grid: column 0 label, column 1 field group (entries + hugging unit), column 2 the add button
+        r0 = ttk.Frame(f, style="CardBody.TFrame")
+        r0.grid(row=0, column=0, columnspan=3, sticky="w", pady=pady)
+        button(r0, "① 参考定标 · 80° S/P 自动积分时间", self.add_reference, "ref").pack(side="left")
+        button(r0, "② 暗底 · 快门关，当前积分时间", self.add_dark, "dark").pack(side="left", padx=(SPACE["sm"], 0))
+
+        self.theta_var = tk.StringVar(value="45")
+        g_th = ttk.Frame(f, style="CardBody.TFrame")
+        e_th = ttk.Entry(g_th, textvariable=self.theta_var, width=6, justify="right")
+        e_th.pack(side="left")
+        bind_enter(e_th, self.add_single)
+        unit_label(g_th, "°")
+        form_row(f, 1, "θ", g_th, button(f, "③ 单角度测量", self.add_single, "single"), label_width=8, pady=pady)
+
+        sc = ttk.Frame(f, style="CardBody.TFrame")
+        self.start_var, self.stop_var, self.step_var = tk.StringVar(value="8"), tk.StringVar(value="80"), tk.StringVar(value="4")
+        for i, (lab, v) in enumerate((("起", self.start_var), ("止", self.stop_var), ("步", self.step_var))):
+            ttk.Label(sc, text=lab, style="FormLabel.TLabel").pack(side="left", padx=((0 if i == 0 else SPACE["sm"]), SPACE["xs"]))
+            e = ttk.Entry(sc, textvariable=v, width=4, justify="right")
+            bind_enter(e, self.add_scan)
+            e.pack(side="left")
+        unit_label(sc, "°")
+        form_row(f, 2, "扫描范围", sc, button(f, "④ 角度扫描", self.add_scan, "scan"), label_width=8, pady=pady)
+
+        r4 = ttk.Frame(f, style="CardBody.TFrame")
+        r4.grid(row=3, column=0, columnspan=3, sticky="w", pady=pady)
+        button(r4, "⑤ 双光束 DB · 含换端口盖暂停", self.add_db, "db").pack(side="left")
+        self.btn_shutter_close = button(r4, "添加：快门关", lambda: self._add([sq.shutter(False)], dedupe=False), "shutter")
+        self.btn_shutter_close.pack(side="left", padx=(SPACE["md"], 0))
+        self.btn_shutter_open = button(r4, "添加：快门开", lambda: self._add([sq.shutter(True)], dedupe=False), "shutter")
+        self.btn_shutter_open.pack(side="left", padx=(SPACE["sm"], 0))
+
+        self.it_var = tk.StringVar(value="1000")
+        g_it = ttk.Frame(f, style="CardBody.TFrame")
+        e_it = ttk.Entry(g_it, textvariable=self.it_var, width=8, justify="right")
+        e_it.pack(side="left")
+        bind_enter(e_it, self.add_set_it)
+        unit_label(g_it, "ms")
+        form_row(f, 4, "积分时间", g_it, button(f, "添加：设定积分时间", self.add_set_it, "set_it"), label_width=8, pady=pady)
+
+        self.pause_var = tk.StringVar(value="请更换样品，然后点确定")
+        e_pause = ttk.Entry(f, textvariable=self.pause_var, width=24)
+        bind_enter(e_pause, self.add_pause)
+        form_row(f, 5, "暂停提示", e_pause, button(f, "添加：暂停", self.add_pause, "pause"), label_width=8, pady=pady)
+        # form_row gives the last used column the weight; one action column (2) for every row, the
+        # fields keep their natural width and the wide button rows push their slack into column 2
+        for c in range(2):
+            f.columnconfigure(c, weight=0)
+        f.columnconfigure(2, weight=1)
+
+    def _build_queue_card(self, parent):
+        card = Card(parent, title="步骤队列 · 0 步 · 0 次采集")
+        card.grid(row=0, column=1, sticky="nsew")
+        self.queue_card = card
+        self.queue_frame = card                      # legacy name (the LabelFrame of the notebook version)
+        body = card.body
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.listbox = tk.Listbox(body, width=30, height=8, activestyle="none", exportselection=False)
+        self.listbox.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(body, orient="vertical", command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=sb.set)
+        sb.grid(row=0, column=1, sticky="ns")
+        self.queue_empty = empty_state(body, "队列为空。", "用左侧「添加步骤」加入 ①–⑤。\n典型顺序：① → ② → ④（白板）→ 换样品 → ④ → ⑤。")
+        self.queue_empty.place(in_=self.listbox, relx=0.5, rely=0.42, anchor="center")
+        b = ttk.Frame(body, style="CardBody.TFrame")
+        b.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(SPACE["sm"], 0))
+        self.btn_remove = ttk.Button(b, text="删除选中", command=self.remove_selected)
+        self.btn_remove.pack(side="left")
+        self.btn_clear = ttk.Button(b, text="清空", command=self.clear)
+        self.btn_clear.pack(side="left", padx=(SPACE["sm"], 0))
+        tooltip(self.btn_remove, TIPS["remove"])
+        tooltip(self.btn_clear, TIPS["clear"])
+        self._edit_buttons += [self.btn_remove, self.btn_clear]
+
+    def _build_done_card(self, parent, px):
+        card = Card(parent, title="已完成的采集 · 0 张")
+        card.grid(row=0, column=0, sticky="nsew", padx=(0, SPACE["md"]))
+        self.done_card = card
+        self.done_frame = card                       # legacy name
+        body = card.body
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        cols = ("time", "tag", "theta", "pol", "it", "peak", "sat")
+        self.done_tree = ttk.Treeview(body, columns=cols, show="headings", height=3, takefocus=0)   # grows with the window
+        for c, w, t, a in zip(cols, (70, 130, 45, 40, 55, 55, 40), ("时间", "标签", "θ°", "偏振", "IT ms", "峰值%", "饱和"),
+                              ("w", "w", "e", "center", "e", "e", "e")):
+            self.done_tree.heading(c, text=t, anchor=a)
+            self.done_tree.column(c, width=px(w), minwidth=px(w), anchor=a, stretch=(c == "tag"))
+        self.done_tree.tag_configure("odd", background=COLORS["row_alt"])
+        sb = ttk.Scrollbar(body, orient="vertical", command=self.done_tree.yview)
+        self.done_tree.configure(yscrollcommand=sb.set)
+        self.done_tree.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+        self.done_empty = empty_state(body, "本会话还没有采集。", "运行后每张光谱会出现在这里。")
+        self.done_empty.place(in_=self.done_tree, relx=0.5, rely=0.6, anchor="center")
+
+    def _build_preview_card(self, parent, px):
+        card = Card(parent, title="实时预览", subtitle="(尚无数据)")
+        card.grid(row=0, column=1, sticky="nsew")
+        self.preview_card = card
         self.preview_var = tk.StringVar(value="(尚无数据)")
-        ttk.Label(prev, textvariable=self.preview_var, font=("TkDefaultFont", 9, "bold")).pack(anchor="w")
+        card.subtitle_label.configure(textvariable=self.preview_var)
+        body = card.body
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
         self.canvas = None
         try:
             import matplotlib
             matplotlib.use("TkAgg")
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-            self.wl = bwtek.wavelengths()
-            self.fig = Figure(figsize=(5, 2.6), dpi=90)
-            self.ax = self.fig.add_subplot(111)
-            self.ax.set_xlabel("nm", fontsize=8)
-            self.ax.tick_params(labelsize=7)
-            self.ax.axvspan(self.wl[bwtek.ACTIVE_FIRST], self.wl[bwtek.ACTIVE_LAST], color="#e8f4e8", zorder=0)
-            self.ax.axhline(bwtek.ADC_MAX, color="r", lw=0.8, ls="--")
-            (self.line,) = self.ax.plot(self.wl, [0] * len(self.wl), lw=0.8)
-            self.ax.set_xlim(self.wl[0], self.wl[-1])
-            self.ax.set_ylim(0, bwtek.ADC_MAX * 1.02)
-            self.fig.tight_layout()
-            self.canvas = FigureCanvasTkAgg(self.fig, master=prev)
-            self.canvas.get_tk_widget().pack(fill="both", expand=True)
         except Exception as e:
-            ttk.Label(prev, text="matplotlib 不可用: %s" % e).pack()
+            ttk.Label(body, text="matplotlib 不可用: %s" % e, style="Card.TLabel").grid(row=0, column=0, sticky="w")
+            return
+        self.wl = bwtek.wavelengths()
+        self.fig = Figure(figsize=(3.6, 1.6), dpi=100)
+        self.fig.patch.set_edgecolor(COLORS["card"])
+        self.ax = self.fig.add_subplot(111)
+        ui_theme.mpl_style_axes(self.ax)
+        self.ax.set_xlabel("nm")
+        # the active band, the ADC limit and the trace stay hidden behind the empty state until the
+        # first spectrum arrives (an empty axis with a saturation line reads as a broken plot)
+        self._guides = [self.ax.axvspan(self.wl[bwtek.ACTIVE_FIRST], self.wl[bwtek.ACTIVE_LAST], color=COLORS["plot_active"], zorder=0),
+                        self.ax.axhline(bwtek.ADC_MAX, color=COLORS["plot_limit"], lw=0.8, ls="--")]
+        (self.line,) = self.ax.plot(self.wl, [0] * len(self.wl), lw=0.9, color=COLORS["accent"])
+        for a in self._guides + [self.line]:
+            a.set_visible(False)
+        self.ax.set_yticks([])
+        self.ax.set_xlim(self.wl[0], self.wl[-1])
+        self.ax.set_ylim(0, bwtek.ADC_MAX * 1.02)
+        self._empty_text = ui_theme.mpl_empty(self.ax, "运行序列后显示最近一张光谱")
+        self.fig.tight_layout(pad=1.2)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=body)
+        w = self.canvas.get_tk_widget()
+        w.configure(width=px(300), height=px(76), highlightthickness=0)
+        w.grid(row=0, column=0, sticky="nsew")
+        ui_theme.mpl_bind_resize(self.canvas, self.fig)
 
-        f = ttk.LabelFrame(right, text="通用参数", padding=6)
-        f.pack(fill="x", pady=2)
-        ttk.Label(f, text="会话/样品名").grid(row=0, column=0, sticky="e")
-        self.session_var = tk.StringVar(value=time.strftime("session_%Y%m%d_%H%M"))
-        ttk.Entry(f, textvariable=self.session_var, width=22).grid(row=0, column=1, columnspan=2, sticky="w")
-        ttk.Button(f, text="载入已有记录", command=self.load_history).grid(row=0, column=3, sticky="w")
-        ttk.Label(f, text="标签前缀").grid(row=1, column=0, sticky="e")
-        self.prefix_var = tk.StringVar(value="sample")
-        ttk.Entry(f, textvariable=self.prefix_var, width=12).grid(row=1, column=1, sticky="w")
-        ttk.Label(f, text="平均次数").grid(row=1, column=2, sticky="e")
-        self.avg_var = tk.StringVar(value="3")
-        ttk.Spinbox(f, from_=1, to=50, textvariable=self.avg_var, width=4).grid(row=1, column=3, sticky="w")
-        ttk.Label(f, text="偏振").grid(row=2, column=0, sticky="e")
-        self.pol_var = tk.StringVar(value="S+P")
-        ttk.Combobox(f, textvariable=self.pol_var, values=["S", "P", "S+P"], state="readonly", width=6).grid(row=2, column=1, sticky="w")
+    # ---- presentation helpers ------------------------------------------------
+    def _set_band_tone(self, tone):
+        self.prog_label.configure(foreground=COLORS[_BAND_TONES.get(tone, "text")])
 
-        f = ttk.LabelFrame(right, text="添加步骤", padding=6)
-        f.pack(fill="x", pady=2)
-        ttk.Button(f, text="① 参考定标: 80°/S 自动积分时间", command=self.add_reference).grid(row=0, column=0, columnspan=4, sticky="ew", pady=1)
-        ttk.Button(f, text="② 暗底 (快门关, 当前积分时间)", command=self.add_dark).grid(row=1, column=0, columnspan=4, sticky="ew", pady=1)
-        ttk.Label(f, text="θ °").grid(row=2, column=0, sticky="e")
-        self.theta_var = tk.StringVar(value="45")
-        ttk.Entry(f, textvariable=self.theta_var, width=6).grid(row=2, column=1, sticky="w")
-        ttk.Button(f, text="③ 单角度测量", command=self.add_single).grid(row=2, column=2, columnspan=2, sticky="ew", pady=1)
-        ttk.Label(f, text="起 / 止 / 步").grid(row=3, column=0, sticky="e")
-        sc = ttk.Frame(f)
-        sc.grid(row=3, column=1, sticky="w")
-        self.start_var, self.stop_var, self.step_var = tk.StringVar(value="8"), tk.StringVar(value="80"), tk.StringVar(value="4")
-        for v in (self.start_var, self.stop_var, self.step_var):
-            ttk.Entry(sc, textvariable=v, width=4).pack(side="left")
-        ttk.Button(f, text="④ 角度扫描", command=self.add_scan).grid(row=3, column=2, columnspan=2, sticky="ew", pady=1)
-        ttk.Button(f, text="⑤ 双光束 DB (含换端口盖暂停)", command=self.add_db).grid(row=4, column=0, columnspan=4, sticky="ew", pady=1)
-        ttk.Label(f, text="积分时间 ms").grid(row=5, column=0, sticky="e")
-        self.it_var = tk.StringVar(value="1000")
-        ttk.Entry(f, textvariable=self.it_var, width=8).grid(row=5, column=1, sticky="w")
-        ttk.Button(f, text="设定积分时间", command=self.add_set_it).grid(row=5, column=2, columnspan=2, sticky="ew", pady=1)
-        ttk.Label(f, text="暂停提示").grid(row=6, column=0, sticky="e")
-        self.pause_var = tk.StringVar(value="请更换样品，然后点确定")
-        ttk.Entry(f, textvariable=self.pause_var, width=24).grid(row=6, column=1, columnspan=2, sticky="w")
-        ttk.Button(f, text="暂停", command=self.add_pause).grid(row=6, column=3, sticky="ew", pady=1)
-        ttk.Button(f, text="快门关", command=lambda: self._add([sq.shutter(False)], dedupe=False)).grid(row=7, column=0, columnspan=2, sticky="ew", pady=1)
-        ttk.Button(f, text="快门开", command=lambda: self._add([sq.shutter(True)], dedupe=False)).grid(row=7, column=2, columnspan=2, sticky="ew", pady=1)
+    def _tone_for(self, text):
+        for prefix, tone in (("完成", "done"), ("已中止", "aborted"), ("失败", "failed"), ("中止中", "aborted"), ("等待操作", "paused"), ("空闲", "idle")):
+            if text.startswith(prefix):
+                return tone
+        return "running"
 
-        f = ttk.LabelFrame(right, text="运行", padding=6)
-        f.pack(fill="x", pady=2)
-        self.btn_run = ttk.Button(f, text="▶ 运行序列", command=self.run)
-        self.btn_run.pack(side="left")
-        self.btn_abort = ttk.Button(f, text="■ 中止", command=self.abort_run, state="disabled")
-        self.btn_abort.pack(side="left", padx=4)
-        self.prog_var = tk.StringVar(value="空闲")
-        ttk.Label(f, textvariable=self.prog_var).pack(side="left", padx=8)
-        self.bar = ttk.Progressbar(right, mode="determinate")
-        self.bar.pack(fill="x", pady=2)
-        ttk.Label(right, text="几何: S=%g° P=%g°  样品台=θ+%g°  探测臂零位 %g°  DB %g°/%g°" % (
-            cfg.POL_DEG["S"], cfg.POL_DEG["P"], cfg.SAMPLE_VAR_OFFSET, cfg.SYSTEM_ZERO, cfg.SYSTEM_DB, cfg.SAMPLE_DB),
-            foreground="#555").pack(anchor="w")
+    def set_locked(self, locked):
+        """Called by the App whenever sequence_running changes; the messagebox guards stay in place."""
+        st = "disabled" if locked else "normal"
+        for b in self._edit_buttons:
+            b.configure(state=st)
+        self.header.set_subtitle(SUBTITLE.rstrip("。") + " · 序列运行中" if locked else SUBTITLE)
+
+    def _sync_empty_states(self):
+        if self.steps:
+            self.queue_empty.place_forget()
+        else:
+            self.queue_empty.place(in_=self.listbox, relx=0.5, rely=0.42, anchor="center")
+        if self.done_tree.get_children():
+            self.done_empty.place_forget()
+        else:
+            self.done_empty.place(in_=self.done_tree, relx=0.5, rely=0.6, anchor="center")
 
     # ---- step editing ------------------------------------------------------
     def _pols(self):
@@ -155,7 +328,8 @@ class SequencePanel(ttk.Frame):
 
     def _update_counts(self):
         n_acq = sum(1 for s in self.steps if s.kind == "acquire")
-        self.queue_frame.config(text="步骤队列 (%d 步, %d 次采集)" % (len(self.steps), n_acq))
+        self.queue_card.set_title("步骤队列 · %d 步 · %d 次采集" % (len(self.steps), n_acq))
+        self._sync_empty_states()
 
     @staticmethod
     def _key(step):
@@ -243,9 +417,9 @@ class SequencePanel(ttk.Frame):
         if self.running or not self.steps:
             return
         if self.app.bus is None or self.app.spectro.spec is None:
-            messagebox.showwarning("未就绪", "请先在前两页连接串口并初始化光谱仪")
+            messagebox.showwarning("未就绪", "请先在「仪器」页连接串口并初始化光谱仪")
             return
-        outdir = os.path.join(DATA_ROOT, self.session_var.get().strip() or time.strftime("session_%Y%m%d_%H%M%S"))
+        outdir = os.path.join(self._data_root(), self.session_var.get().strip() or time.strftime("session_%Y%m%d_%H%M%S"))
         # integration time consistency: a restarted GUI defaults to 100 ms, but the session's
         # spectra must all share one integration time unless the queue sets it explicitly
         first_acq = next((i for i, s in enumerate(self.steps) if s.kind == "acquire" and s.params.get("meta", {}).get("kind") in ("var", "dark")), None)
@@ -302,6 +476,7 @@ class SequencePanel(ttk.Frame):
         self.btn_run.config(state="disabled")
         self.btn_abort.config(state="normal")
         self.bar["maximum"] = len(self.steps)
+        self.bar["value"] = 0
         steps = list(self.steps)
         self.job_steps = steps
         bus, spec = self.app.bus, self.app.spectro.spec
@@ -312,8 +487,16 @@ class SequencePanel(ttk.Frame):
             box = {"ok": False}
 
             def show():
-                box["ok"] = messagebox.askokcancel("序列暂停", msg)
-                ev.set()
+                prev = self.prog_var.get()
+                self.prog_var.set("等待操作：%s" % msg)
+                self._set_band_tone("paused")
+                self.app.refresh_status()
+                try:
+                    box["ok"] = messagebox.askokcancel("序列暂停", msg)
+                finally:
+                    self.prog_var.set(prev)
+                    self._set_band_tone("running")
+                    ev.set()
             self.events.put(("call", show))
             ev.wait()
             return box["ok"]
@@ -329,10 +512,12 @@ class SequencePanel(ttk.Frame):
 
         self.load_history(outdir)
         self._mark_progress(0)
+        self._set_band_tone("running")
+        self.app.refresh_status()
 
         def job():
             runner = sq.Runner(bus, spec, outdir, log=log, ask_user=ask_user, abort=self.abort, progress=progress,
-                               ppd=ppd, on_spectrum=on_spectrum)
+                               ppd=ppd, on_spectrum=on_spectrum, state_path=self.app.state_path)
             # failures are reported here, not through the worker's generic error path: the panel
             # must always leave the "running" state (buttons, disconnect) whatever happened
             try:
@@ -348,6 +533,8 @@ class SequencePanel(ttk.Frame):
     def abort_run(self):
         self.abort.set()
         self.prog_var.set("中止中…(等待当前步骤结束)")
+        self._set_band_tone("aborted")
+        self.app.refresh_status()
 
     def _done(self, manifest):
         if manifest is None:               # reported through the "failed" event
@@ -357,7 +544,9 @@ class SequencePanel(ttk.Frame):
 
     def _failed(self, title, msg, shutter_open):
         self._finish("%s: %s" % (title, msg))
-        extra = "" if shutter_open is False else "\n\n注意：快门状态未知，请在电机页确认已关闭 (0bw)。"
+        # the Runner closes the shutter on its way out; mirror what it reports (None = unknown)
+        self.app.set_shutter({True: "open", False: "closed"}.get(shutter_open, "unknown"), "sequence %s" % title)
+        extra = "" if shutter_open is False else "\n\n注意：快门状态未知，请看状态栏或在「电机与快门」页确认已关闭。"
         if title == "已中止":
             messagebox.showwarning("序列已中止", msg + extra)
         else:
@@ -370,37 +559,61 @@ class SequencePanel(ttk.Frame):
             mark = "✓" if i < current else ("▶" if i == current else " ")
             self.listbox.delete(i)
             self.listbox.insert(i, "%s %3d  %s" % (mark, i + 1, st.text))
-            self.listbox.itemconfig(i, foreground="#888" if i < current else ("#0a0" if i == current else "#000"))
+            self.listbox.itemconfig(i, foreground=COLORS["text3"] if i < current else (COLORS["accent_pressed"] if i == current else COLORS["text"]))
         if 0 <= current < len(self.steps):
             self.listbox.see(current)
 
+    def _derive_state(self, i):
+        """Spec 2.4: the step before the one just announced has completed; mirror its effect in the
+        GUI-side state (shutter / stage angle) without touching the hardware."""
+        if 0 < i <= len(self.job_steps):
+            st = self.job_steps[i - 1]
+            if st.kind == "shutter":
+                self.app.set_shutter("open" if st.params.get("open") else "closed", "sequence step %d" % i)
+            elif st.kind == "stage":
+                self.app.update_module(st.params["addr"], deg=st.params["deg"], source="sequence step %d" % i)
+
     def load_history(self, outdir=None):
         if outdir is None:
-            outdir = os.path.join(DATA_ROOT, self.session_var.get().strip())
+            outdir = os.path.join(self._data_root(), self.session_var.get().strip())
         recs = sq.Runner.load_manifest(outdir)
         self.done_tree.delete(*self.done_tree.get_children())
         self.done_tags = set()
         for r in recs:
             self._add_done(r)
-        self.done_frame.config(text="已完成的采集: %s (%d 张)" % (os.path.basename(outdir), len(recs)))
+        self.done_card.set_title("已完成的采集 · %s · %d 张" % (os.path.basename(outdir), len(recs)))
+        self._sync_empty_states()
 
     def _add_done(self, r):
         theta = r.get("theta")
+        n = len(self.done_tree.get_children())
         self.done_tree.insert("", "end", values=(
             r.get("time", "")[11:], r.get("tag", ""), "" if theta is None else "%g" % theta, r.get("pol", ""),
             r.get("integration_ms", ""), "%.0f" % (100.0 * (r.get("peak") or 0) / bwtek.ADC_MAX),
-            r.get("saturated_active", 0)))
+            r.get("saturated_active", 0)), tags=("odd",) if n % 2 else ("even",))
         self.done_tags.add(r.get("tag"))
         self.done_tree.yview_moveto(1.0)
+        self.done_empty.place_forget()
 
     def _show_spectrum(self, rec, counts):
         if not rec.get("preview_only"):
             self._add_done(rec)
             n = len(self.done_tree.get_children())
-            self.done_frame.config(text="已完成的采集: %s (%d 张)" % (os.path.basename(self.session_var.get().strip()), n))
+            self.done_card.set_title("已完成的采集 · %s · %d 张" % (os.path.basename(self.session_var.get().strip()), n))
         peak = int(rec.get("peak") or 0)
         self.preview_var.set("%s   IT %s ms   峰值 %d (%.0f%%)" % (rec.get("tag"), rec.get("integration_ms"), peak, 100.0 * peak / bwtek.ADC_MAX))
         if self.canvas:
+            if self._empty_text is not None:
+                try:
+                    self._empty_text.remove()
+                except Exception:
+                    pass
+                self._empty_text = None
+                for a in self._guides + [self.line]:
+                    a.set_visible(True)
+                from matplotlib import ticker as mticker      # matplotlib is optional: imported lazily
+                self.ax.yaxis.set_major_locator(mticker.AutoLocator())
+                self.fig.tight_layout(pad=1.2)                 # make room for the y tick labels
             self.line.set_ydata(counts)
             self.ax.set_ylim(0, max(1000, counts.max() * 1.1))
             self.canvas.draw_idle()
@@ -408,9 +621,10 @@ class SequencePanel(ttk.Frame):
     def _last_session_it(self):
         """(session name, integration_ms) of the most recent VAR spectrum in any session, or None."""
         best = None
+        root = self._data_root()
         try:
-            for name in os.listdir(DATA_ROOT):
-                for r in sq.Runner.load_manifest(os.path.join(DATA_ROOT, name)):
+            for name in os.listdir(root):
+                for r in sq.Runner.load_manifest(os.path.join(root, name)):
                     if r.get("kind") == "var" and (best is None or r.get("time", "") > best[2]):
                         best = (name, int(r["integration_ms"]), r.get("time", ""))
         except OSError:
@@ -426,10 +640,12 @@ class SequencePanel(ttk.Frame):
         self.btn_run.config(state="normal")
         self.btn_abort.config(state="disabled")
         self.prog_var.set(text)
+        self._set_band_tone(self._tone_for(text))
         self.app._log_line("SEQ " + text)
-        # the spectrometer tab's IT box should reflect what the sequence left behind
+        # the spectrometer page's IT box should reflect what the sequence left behind
         if self.app.spectro.spec and self.app.spectro.spec.integration_ms:
             self.app.spectro.it_var.set(str(self.app.spectro.spec.integration_ms))
+        self.app.refresh_status()
 
     def _poll(self):
         try:
@@ -440,8 +656,14 @@ class SequencePanel(ttk.Frame):
                 elif kind == "progress":
                     i, n, text = payload
                     self.bar["value"] = i
-                    self.prog_var.set("%d/%d  %s" % (i, n, text))
                     self._mark_progress(i)
+                    self._derive_state(i)
+                    # the Runner's final progress(n, n) travels through self.events while _done/_failed
+                    # arrive through the spectrometer worker queue: whichever is polled first wins, so
+                    # a late progress event must not overwrite the finished/failed text
+                    if self.running:
+                        self.prog_var.set("%d/%d  %s" % (i, n, text))
+                        self._set_band_tone("running")
                 elif kind == "spectrum":
                     self._show_spectrum(*payload)
                 elif kind == "call":
