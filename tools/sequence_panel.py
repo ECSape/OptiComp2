@@ -30,6 +30,9 @@ GEOMETRY = "S=%g° P=%g° · θ+%g°" % (
     cfg.POL_DEG["S"], cfg.POL_DEG["P"], cfg.SAMPLE_VAR_OFFSET)
 
 TIPS = {
+    "reconnect": "Before each run, reopen the spectrometer DLL session (recovers a hung USB device) so you need not power-cycle between samples.",
+    "zero": "Before each run, close the shutter and move every rotation stage to its zero (the fibre arm by absolute move, never homed).",
+    "stabilise": "Before the reference calibration, hold until the lamp is steady (band-mean change under 0.5% for 5 reads, ~60-read timeout) so lamp drift between the reference and sample sessions cannot bias R.",
     "run": "Run the whole queue (Ctrl+R / ⌘R). Before running it checks in turn: serial port and spectrometer, integration time, existing data, duplicate tags, then a final confirm.",
     "abort": "Request an abort (Esc): the run stops after the current step; the Runner closes the shutter and restores any temporary integration time.",
     "load": "Read data/<session>/manifest.json and list the completed acquisitions in the table below; also read automatically before a run.",
@@ -96,11 +99,17 @@ class SequencePanel(ttk.Frame):
         # so the operator no longer power-cycles the USB or reconnects between samples (kept on the band
         # row to stay within the 720 px height budget). The fibre arm is moved to its zero, never homed.
         self.autoreconnect_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(band, text="Reconnect spectrometer before run", variable=self.autoreconnect_var,
-                        style="TCheckbutton").grid(row=0, column=2, sticky="e", padx=(SPACE["md"], 0))
+        cb_rc = ttk.Checkbutton(band, text="Reconnect spec", variable=self.autoreconnect_var, style="TCheckbutton")
+        cb_rc.grid(row=0, column=2, sticky="e", padx=(SPACE["md"], 0))
+        tooltip(cb_rc, TIPS["reconnect"])
         self.autoreset_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(band, text="Zero positions before run", variable=self.autoreset_var,
-                        style="TCheckbutton").grid(row=0, column=3, sticky="e", padx=(SPACE["sm"], 0))
+        cb_z = ttk.Checkbutton(band, text="Zero positions", variable=self.autoreset_var, style="TCheckbutton")
+        cb_z.grid(row=0, column=3, sticky="e", padx=(SPACE["sm"], 0))
+        tooltip(cb_z, TIPS["zero"])
+        self.stabilise_var = tk.BooleanVar(value=True)
+        cb_s = ttk.Checkbutton(band, text="Lamp-stable gate", variable=self.stabilise_var, style="TCheckbutton")
+        cb_s.grid(row=0, column=4, sticky="e", padx=(SPACE["sm"], 0))
+        tooltip(cb_s, TIPS["stabilise"])
         self._set_band_tone("idle")
 
         # ---- session: one full-width row (keeps the page under the 720 px minimum height)
@@ -365,7 +374,7 @@ class SequencePanel(ttk.Frame):
         self._update_counts()
 
     def add_reference(self):
-        self._add(sq.build_reference_calibration())
+        self._add(sq.build_reference_calibration(stabilise=self.stabilise_var.get()))
 
     def add_dark(self):
         self._add(sq.build_dark(self._avg()))

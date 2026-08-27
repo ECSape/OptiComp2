@@ -86,6 +86,10 @@ def apply_min_it():
     return Step("apply_min_it", "take the smaller of the S/P calibration integration times")
 
 
+def wait_stable():
+    return Step("wait_stable", "wait for lamp stability")
+
+
 def build_reset():
     """Bring the instrument to a known start state before a run: shutter closed and every
     rotation stage moved to its defined zero. Absolute moves only - the fibre-carrying detector
@@ -98,13 +102,17 @@ def build_reset():
             stage(cfg.POLARISER, 0.0, "polariser to zero")]
 
 
-def build_reference_calibration():
+def build_reference_calibration(stabilise=True):
     """Thesis 4.2.3.3 sets the integration time on the reference at 80° / S (its brightest
     point for specular dielectrics). Measured 2026-08-25 on a diffuse reference the P
     channel was 12 % brighter, so both polarisations are calibrated and the smaller
-    integration time is kept."""
-    return [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "detector arm zero"), sample_theta(cfg.THETA_MAX), shutter(True),
-            polariser("S"), auto_it(), polariser("P"), auto_it(), apply_min_it(), shutter(False)]
+    integration time is kept. With stabilise=True (HW-F02) the lamp is held until steady before
+    calibrating, since drift between the reference and sample sessions biases R directly."""
+    steps = [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "detector arm zero"), sample_theta(cfg.THETA_MAX), shutter(True)]
+    if stabilise:
+        steps.append(wait_stable())
+    steps += [polariser("S"), auto_it(), polariser("P"), auto_it(), apply_min_it(), shutter(False)]
+    return steps
 
 
 def build_dark(avg, tag="dark"):
@@ -354,6 +362,8 @@ class Runner(object):
                 self.spec.set_integration_time(it)
                 self.log("integration time set to %d ms (candidates %s)" % (it, self.it_candidates))
                 self.it_candidates = []
+        elif st.kind == "wait_stable":
+            self._wait_stable()
         elif st.kind == "acquire":
             self._acquire(p["tag"], p["avg"], p.get("meta", {}))
         elif st.kind == "pause":
@@ -391,6 +401,45 @@ class Runner(object):
             it = bwtek.next_integration_time(it, peak, base)
             self.spec.set_integration_time(it)
         raise RuntimeError("auto-IT did not converge in 8 steps (last %d ms, peak %d)" % (it, peak))
+
+    def _wait_stable(self, threshold_pct=None, need=None, max_reads=None):
+        """HW-F02: hold until the lamp output is steady before calibrating the reference.
+
+        R combines a sample and a reference session taken minutes-to-hours apart; lamp drift between
+        them does not cancel and biases R. This reads the active-band mean until it stays within
+        `threshold_pct` of its recent mean for `need` consecutive reads. It warns and proceeds after
+        `max_reads` (never a hard block). Assumes the shutter is already open.
+        """
+        threshold_pct = cfg.STABILISE_PCT if threshold_pct is None else threshold_pct
+        need = cfg.STABILISE_READS if need is None else need
+        max_reads = cfg.STABILISE_MAX_READS if max_reads is None else max_reads
+        lo, hi = bwtek.ACTIVE_FIRST, bwtek.ACTIVE_LAST + 1
+        # a usable exposure first - also surfaces a closed shutter / lamp off / broken fibre before the run
+        if not bwtek.peak_in_band(int(self._read(1, 0, 0)[lo:hi].max())):
+            self._auto_it()
+        self.log("waiting for lamp stability: <= %.2f%% for %d consecutive reads at %d ms"
+                 % (threshold_pct, need, self.spec.integration_ms))
+        window, stable, drift = [], 0, 0.0
+        for k in range(int(max_reads)):
+            self._check_abort()
+            counts = self._read(1, 0, 0)
+            m = float(counts[lo:hi].mean())
+            if window:
+                ref = sum(window) / len(window)
+                drift = abs(m - ref) / ref * 100.0 if ref else 0.0
+                stable = stable + 1 if drift <= threshold_pct else 0
+            window.append(m)
+            if len(window) > need:
+                window.pop(0)
+            self.on_spectrum({"tag": "stabilise %d/%d" % (stable, need), "integration_ms": self.spec.integration_ms,
+                              "peak": int(counts[lo:hi].max()), "preview_only": True}, counts)
+            self.log("stabilise %d: mean %.0f drift %.2f%% (%d/%d)" % (k, m, drift, stable, need))
+            if stable >= need:
+                self.log("lamp stable after %d reads (drift %.2f%%)" % (k + 1, drift))
+                return True
+        self.log("WARNING lamp not stable after %d reads (last drift %.2f%%): proceeding, R may be biased by drift"
+                 % (max_reads, drift))
+        return False
 
     def _acquire(self, tag, avg, meta):
         t0 = time.time()

@@ -393,5 +393,36 @@ class StabilityRegressionTests(unittest.TestCase):
         self.assertEqual(sq.Runner.load_manifest(out), [])
         self.assertFalse(os.path.isfile(os.path.join(out, "manifest.json")))    # set aside, not overwritten
 
+
+
+class HWF02StabilityGateTests(unittest.TestCase):
+    def test_reference_calibration_stabilise_flag_controls_wait_step(self):
+        on = sq.build_reference_calibration(stabilise=True)
+        off = sq.build_reference_calibration(stabilise=False)
+        self.assertEqual(sum(s.kind == "wait_stable" for s in on), 1)
+        self.assertEqual(sum(s.kind == "wait_stable" for s in off), 0)
+        kinds = [s.kind for s in on]
+        i = kinds.index("wait_stable")
+        self.assertEqual(kinds[i - 1], "shutter")               # right after the shutter opens
+        self.assertLess(i, kinds.index("auto_it"))              # before the S/P calibration
+        self.assertEqual([s.kind for s in on[-6:]], [s.kind for s in off[-6:]])   # tail unchanged
+
+    def test_wait_stable_passes_on_a_steady_lamp(self):
+        # in-band, constant output -> drift 0 -> gate clears after `need` reads (no _auto_it needed)
+        r = sq.Runner(FakeBus(), FakeSpec(level=55000), tempfile.mkdtemp())
+        self.assertTrue(r._wait_stable(threshold_pct=0.5, need=3, max_reads=20))
+
+    def test_wait_stable_warns_but_never_blocks_on_drift(self):
+        class DriftSpec(FakeSpec):
+            def read(self, avg, st=0, sv=0):
+                out = FakeSpec.read(self, avg, st, sv)
+                self.level += 200                                # steady upward drift, stays in band
+                return out
+        logs = []
+        r = sq.Runner(FakeBus(), DriftSpec(level=55000), tempfile.mkdtemp())
+        r.log = lambda t: logs.append(t)
+        self.assertFalse(r._wait_stable(threshold_pct=0.1, need=5, max_reads=8))   # warns, returns False
+        self.assertTrue(any("not stable" in t for t in logs))
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,14 @@ POL_DEG = {"P": 146.0, "S": 236.0}
 
 SYSTEM_ZERO = 44.0
 DB_IT_MS = 1000               # double-beam spectra always at this integration time (thesis: 1000 ms)
+
+# HW-F02 lamp-stability gate (runs before the reference calibration only): hold until the active-band
+# mean stays within STABILISE_PCT of its recent mean for STABILISE_READS consecutive reads; after
+# STABILISE_MAX_READS reads it warns and proceeds (never a hard block). Ported from the original
+# rampupsource/SRTI supervisor so lamp drift between the reference and sample sessions cannot bias R.
+STABILISE_PCT = 0.5
+STABILISE_READS = 5
+STABILISE_MAX_READS = 60
 SYSTEM_DB = 124.0
 SYSTEM_EXCHANGE = 150.0
 
