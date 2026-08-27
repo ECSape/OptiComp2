@@ -88,7 +88,7 @@ class GuiDemoTests(unittest.TestCase):
 
     def test_01_window(self):
         app = self.app
-        self.assertIn("演示模式", app.title())
+        self.assertIn("Demo mode", app.title())
         self.assertEqual(tuple(app.minsize()), (1100, 720))
         self.assertTrue(app.demo)
         self.assertEqual(set(app.pages), {"instrument", "motors", "spectro", "measure", "analysis"})
@@ -121,7 +121,7 @@ class GuiDemoTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_03a_lock_keeps_running_live_read_stoppable(self):
-        # review regression: during a sequence the 停止连续 / 停止监视 buttons must stay usable
+        # review regression: during a sequence the Stop live / Stop monitor buttons must stay usable
         sp = self.app.spectro
         sp.worker.live.set()
         try:
@@ -173,14 +173,14 @@ class GuiDemoTests(unittest.TestCase):
         self.assertEqual(type(app.bus).__name__, "DemoBus")
         self.assertEqual(type(app.spectro.spec).__name__, "DemoSpec")
         self.assertEqual(app.shutter_state, "closed")
-        self.assertTrue(app.statusbar.get("seq").startswith("序列 完成"), app.statusbar.get("seq"))
-        self.assertTrue(app.sequence.prog_var.get().startswith("完成"), app.sequence.prog_var.get())
+        self.assertTrue(app.statusbar.get("seq").startswith("Sequence Done"), app.statusbar.get("seq"))
+        self.assertTrue(app.sequence.prog_var.get().startswith("Done"), app.sequence.prog_var.get())
         self.assertEqual(app.sequence.steps, [])
         self.assertGreater(len(sq.Runner.load_manifest(si_dir)), before)
         self.assertIn("demo_si", app.sequence.done_card.title_var.get())
         self.assertEqual(sorted(app.analysis.results), ["P", "S"])
         self.assertTrue(app.health_problems, "anomaly injected at the last station must be reported")
-        self.assertTrue(any("SEQ 完成" in l for l in app.log_lines), self._log_tail())
+        self.assertTrue(any("SEQ Done" in l for l in app.log_lines), self._log_tail())
 
     def test_05_layout_audit(self):
         import ui_render

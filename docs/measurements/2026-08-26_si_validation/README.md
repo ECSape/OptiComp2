@@ -1,25 +1,25 @@
-# 2026‑08‑26 系统验证：抛光单晶硅 vs 白板（首次完整 VAR 测量）
+# 2026-08-26 system validation: polished crystalline silicon vs white board (first full VAR measurement)
 
-首次使用 OptiComp2 GUI v1.1 完成的参考 + 样品 session，用作系统状态的基准记录。
-原始数据（`white_new/`、`si_new/`，各 42 张谱 + `manifest.json`）与实验室电脑 `C:\OptiComp2\data\` 中的副本逐字节相同。
+The first reference + sample session completed with the OptiComp2 GUI v1.1, kept as the baseline record of the system state.
+The raw data (`white_new/`, `si_new/`, 42 spectra each + `manifest.json`) is byte-for-byte identical to the copy in `C:\OptiComp2\data\` on the lab PC.
 
-## 测量条件
+## Measurement conditions
 
-| 项目 | 值 |
+| Item | Value |
 |---|---|
-| 时间 | white_new 21:50–21:54，si_new 22:04–22:08（灯预热 ≥ 30 min） |
-| 几何 | 探测臂 44°（当晚重新回零），样品台 θ+105°，偏振片 S=236° / P=146°，DB 位 124°/93° |
-| 角度 | θ = 8:4:80（19 角）× S、P，每张平均 3 次 |
-| 积分时间 | 1424 ms（白板 80° 自动定标，取 min(IT_S, IT_P)）；DB 谱固定 1000 ms |
-| 暗底 | `dark_1424ms.csv`、`dark_db_1000ms.csv`，每个 session 各一套 |
-| 饱和 | 0 像素；日志无警告；无重发/纠正移动 |
-| 样品 | 20×20 mm 抛光 Si，装在 30×30 mm 夹具中；参考为白板（反射率按 0.99 常数） |
-| 峰值 | 白板 S ≈ 49 k、P ≈ 56 k（P 比 S 亮 13 %）；Si S 19 k→37 k 单调上升，P 在 64–68° 最低 10.7 k |
-| DB 因子 | (Scy−Sd)/(Scx−Sd) = 1.111 ± 0.054 (S)，1.108 ± 0.052 (P)，420–1000 nm |
+| Time | white_new 21:50-21:54, si_new 22:04-22:08 (lamp warmed up >= 30 min) |
+| Geometry | detector arm 44° (re-homed that night), sample stage θ+105°, polariser S=236° / P=146°, DB positions 124°/93° |
+| Angles | θ = 8:4:80 (19 angles) × S, P, 3 averages per spectrum |
+| Integration time | 1424 ms (auto-calibrated on the white board at 80°, using min(IT_S, IT_P)); DB spectra fixed at 1000 ms |
+| Darks | `dark_1424ms.csv`, `dark_db_1000ms.csv`, one set per session |
+| Saturation | 0 pixels; no warnings in the log; no resends / corrective moves |
+| Sample | 20x20 mm polished Si, mounted in a 30x30 mm holder; reference is the white board (reflectance taken as the constant 0.99) |
+| Peaks | white board S ≈ 49 k, P ≈ 56 k (P is 13 % brighter than S); Si S rises monotonically 19 k -> 37 k, P is lowest 10.7 k at 64-68° |
+| DB factor | (Scy-Sd)/(Scx-Sd) = 1.111 ± 0.054 (S), 1.108 ± 0.052 (P), 420-1000 nm |
 
-## 结果（`compare_si.py` → `si_vs_fresnel.png`，`R_si_S.csv`、`R_si_P.csv`）
+## Results (`compare_si.py` -> `si_vs_fresnel.png`, `R_si_S.csv`, `R_si_P.csv`)
 
-实测/Fresnel 表比值（420–1000 nm 平均，含 DB 修正）：
+Measured / Fresnel-table ratio (420-1000 nm mean, DB-corrected):
 
 | θ | S | P |
 |---|---|---|
@@ -28,18 +28,18 @@
 | 32° | 1.03 | 1.12 |
 | 44° | 1.02 | 1.24 |
 | 56° | 1.06 | 1.62 |
-| 68° | 1.01 | 5.5（实测 0.19 vs 理论 0.049） |
-| 76° | 0.98 | —（实测 0.30 vs 理论 ≈0） |
-| 80° | 0.96 | 18（实测 0.46 vs 理论 0.025） |
+| 68° | 1.01 | 5.5 (measured 0.19 vs theory 0.049) |
+| 76° | 0.98 | — (measured 0.30 vs theory ≈ 0) |
+| 80° | 0.96 | 18 (measured 0.46 vs theory 0.025) |
 
-- **S 偏振**：32–72° 与 Fresnel 吻合在 ±5 % 内；8–28° 偏高 +9…+15 %；76–80° 偏低 −2…−4 %。光谱形状正确。
-- **P 偏振**：40° 以下与 S 同量级偏高（偏振片角度正确，8° 时 S/P 比值相同）；Brewster 谷（≈76°）被填平，实测最低 0.18–0.19，80° 回升到 0.46。
-- **解释**：以"光束溢出样品、打到夹具"模型联立 S、P 两式，得溢出份额 f 与夹具反射率 R_h：
-  68° f≈0.23 / R_h≈0.66；76° f≈0.43 / 0.71；80° f≈0.60 / 0.75。三处 R_h 一致，f 随 1/cosθ 增长，对应 **≈8–10 mm 光斑在 >60° 时超出 20 mm 硅片**。同一模型也解释 S 在 80° 偏低。
-- **低角度 +10–15 %**（S、P 同步）：白板反射率并非 0.99 常数和/或 DB 修正量的不确定；不加 DB 时 8° 为 1.04。
+- **S polarisation**: agrees with Fresnel within ±5 % over 32-72°; high by +9…+15 % at 8-28°; low by -2…-4 % at 76-80°. The spectral shape is correct.
+- **P polarisation**: below 40° it is high by the same amount as S (the polariser angle is correct — the S/P ratio is identical at 8°); the Brewster minimum (≈76°) is filled in, the measured minimum is 0.18-0.19, recovering to 0.46 at 80°.
+- **Explanation**: solving the two S and P equations under a "beam overspills the sample and hits the holder" model gives the overspill fraction f and holder reflectance R_h:
+  68° f≈0.23 / R_h≈0.66; 76° f≈0.43 / 0.71; 80° f≈0.60 / 0.75. R_h is consistent across the three, f grows as 1/cosθ, corresponding to a **≈8-10 mm spot overspilling the 20 mm silicon wafer above 60°**. The same model also explains the S low bias at 80°.
+- **Low-angle +10-15 %** (S and P together): the white-board reflectance is not exactly the constant 0.99 and/or the DB correction magnitude is uncertain; without DB the 8° value is 1.04.
 
-## 结论 / 使用约定（自本日起）
+## Conclusions / conventions (from this day on)
 
-1. 系统（电机几何、偏振、积分时间、暗底、DB 流程）工作正常，`white_new` 作为当日参考有效。
-2. 20 mm 量级样品的结果在 **θ ≤ 60°** 内可信（S ±5 %，绝对水平 ±10 % 待白板真值确定）；>60° 受光斑溢出影响，P 偏振尤甚。≥ 50 mm 样品可用到约 78°。
-3. 待办（不影响当前测量）：量光斑直径；样品四周加黑色遮罩；获取白板标定曲线替换常数 0.99。
+1. The system (motor geometry, polarisation, integration time, darks, DB procedure) works correctly, and `white_new` is a valid reference for the day.
+2. Results for 20 mm-scale samples are trustworthy within **θ ≤ 60°** (S ±5 %, absolute level ±10 % pending the white-board ground truth); above 60° they are affected by beam overspill, P polarisation most of all. Samples ≥ 50 mm are usable to about 78°.
+3. To do (does not affect the current measurement): measure the spot diameter; add a black mask around the sample; obtain a white-board calibration curve to replace the constant 0.99.

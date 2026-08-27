@@ -64,35 +64,35 @@ class ThemeTests(unittest.TestCase):
 
     def test_card(self):
         host = ttk.Frame(self.root)
-        c = self.ui.Card(host, title="标题", subtitle="副标题")
+        c = self.ui.Card(host, title="Title", subtitle="Subtitle")
         c.pack()
         self.root.update_idletasks()
-        self.assertEqual(c.title_var.get(), "标题")
-        c.set_title("新标题")
-        c.set_subtitle("新副标题")
-        self.assertEqual(c.title_label.cget("text") or c.title_var.get(), "新标题")
+        self.assertEqual(c.title_var.get(), "Title")
+        c.set_title("New title")
+        c.set_subtitle("New subtitle")
+        self.assertEqual(c.title_label.cget("text") or c.title_var.get(), "New title")
         self.assertEqual(c.header.winfo_manager(), "grid")
         self.assertEqual(c.body.winfo_manager(), "grid")
         bare = self.ui.Card(host)
         bare.pack()
         self.root.update_idletasks()
         self.assertEqual(bare.header.winfo_manager(), "")
-        acts = self.ui.Card(host, title="x", actions=[("动作", lambda: None)])
-        self.assertIn("动作", acts.action_buttons)
+        acts = self.ui.Card(host, title="x", actions=[("Action", lambda: None)])
+        self.assertIn("Action", acts.action_buttons)
 
     def test_status_pill(self):
-        p = self.ui.StatusPill(self.root, "空闲", "neutral")
-        p.set("运行中", "accent")
-        self.assertEqual(p.text, "运行中")
+        p = self.ui.StatusPill(self.root, "Idle", "neutral")
+        p.set("Running", "accent")
+        self.assertEqual(p.text, "Running")
         self.assertEqual(p.tone, "accent")
         p.set(tone="danger")
-        self.assertEqual(p.text, "运行中")
+        self.assertEqual(p.text, "Running")
         self.assertEqual(p.tone, "danger")
 
     def test_disclosure(self):
         seen = []
         host = ttk.Frame(self.root)
-        d = self.ui.Disclosure(host, title="高级", on_toggle=seen.append)
+        d = self.ui.Disclosure(host, title="Advanced", on_toggle=seen.append)
         d.pack()
         self.assertFalse(d.is_open)
         d.open()
@@ -105,31 +105,31 @@ class ThemeTests(unittest.TestCase):
 
     def test_banner(self):
         host = ttk.Frame(self.root)
-        b = self.ui.Banner(host, "提示", tone="warning")
+        b = self.ui.Banner(host, "Notice", tone="warning")
         b.grid(row=0, column=0)
-        b.show("提示")                                  # hidden until show()
+        b.show("Notice")                                  # hidden until show()
         self.root.update_idletasks()
         self.assertTrue(b.visible)
         self.assertEqual(b.winfo_manager(), "grid")
         b.hide()
         self.assertFalse(b.visible)
         self.assertEqual(b.winfo_manager(), "")
-        b.show("危险", "danger")
+        b.show("Danger", "danger")
         self.assertTrue(b.visible)
         self.assertEqual(b.tone, "danger")
-        self.assertEqual(b.label.cget("text"), "危险")
+        self.assertEqual(b.label.cget("text"), "Danger")
 
     def test_readout(self):
-        r = self.ui.Readout(self.root, [("a", "甲"), ("b", "乙")], columns=2)
+        r = self.ui.Readout(self.root, [("a", "A"), ("b", "B")], columns=2)
         r.set("a", "1.0 ms", "accent")
         r.set("b", None)
         self.assertEqual(r.values["a"].cget("text"), "1.0 ms")
         self.assertEqual(r.values["b"].cget("text"), "—")
 
     def test_statusbar(self):
-        sb = self.ui.StatusBar(self.root, [("k1", "一"), ("k2", "二")], action=("关闭快门", lambda: None))
-        sb.set("k1", "三", "success")
-        self.assertEqual(sb.get("k1"), "三")
+        sb = self.ui.StatusBar(self.root, [("k1", "One"), ("k2", "Two")], action=("Close shutter", lambda: None))
+        sb.set("k1", "Three", "success")
+        self.assertEqual(sb.get("k1"), "Three")
         self.assertEqual(sb.tone("k1"), "success")
         self.assertIsNone(sb.get("missing"))
         sb.set_action(state="disabled")
@@ -139,28 +139,28 @@ class ThemeTests(unittest.TestCase):
         f = ttk.Frame(self.root)
         e = ttk.Entry(f)
         b = ttk.Button(f, text="x")
-        placed = self.ui.form_row(f, 0, "标签", e, b, unit="ms")
+        placed = self.ui.form_row(f, 0, "Label", e, b, unit="ms")
         self.assertEqual(placed, [e, b])
         lab = f.grid_slaves(row=0, column=0)[0]
-        self.assertEqual(lab.cget("text"), "标签")
+        self.assertEqual(lab.cget("text"), "Label")
         self.assertEqual(e.grid_info()["column"], 1)
         self.assertEqual(b.grid_info()["column"], 2)
         unit = f.grid_slaves(row=0, column=3)[0]
         self.assertEqual(unit.cget("text"), "ms")
 
     def test_empty_state_and_page_header(self):
-        es = self.ui.empty_state(self.root, "空", "提示")
+        es = self.ui.empty_state(self.root, "Empty", "Hint")
         self.assertEqual(len([c for c in es.winfo_children() if isinstance(c, ttk.Label)]), 2)
         calls = []
-        h = self.ui.PageHeader(self.root, "页", "副标题", actions=[("主要", lambda: calls.append(1), "Primary.TButton"), ("次要", lambda: calls.append(2))])
-        self.assertIn("主要", h.buttons)
-        h.buttons["主要"].invoke()
+        h = self.ui.PageHeader(self.root, "Page", "Subtitle", actions=[("Primary", lambda: calls.append(1), "Primary.TButton"), ("Secondary", lambda: calls.append(2))])
+        self.assertIn("Primary", h.buttons)
+        h.buttons["Primary"].invoke()
         self.assertEqual(calls, [1])
-        h.set_subtitle("新副标题")
+        h.set_subtitle("New subtitle")
 
     def test_tooltip_and_bind_enter(self):
         b = ttk.Button(self.root, text="t")
-        self.assertIs(self.ui.tooltip(b, "提示"), b)
+        self.assertIs(self.ui.tooltip(b, "Tip"), b)
         e = ttk.Entry(self.root)
         self.assertIs(self.ui.bind_enter(e, lambda: None), e)
         self.assertIn("<Key-Return>", e.bind())
@@ -181,8 +181,8 @@ class ThemeTests(unittest.TestCase):
         fig = Figure()
         ax = fig.add_subplot(111)
         self.ui.mpl_style_axes(ax)
-        t = self.ui.mpl_empty(ax, "尚无数据")
-        self.assertEqual(t.get_text(), "尚无数据")
+        t = self.ui.mpl_empty(ax, "No data yet")
+        self.assertEqual(t.get_text(), "No data yet")
 
 
 if __name__ == "__main__":

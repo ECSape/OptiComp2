@@ -652,10 +652,10 @@ def tooltip(widget, text, **kw):
 
 class Section(ttk.Frame):
     """Always-visible titled area: a hairline, a caption title and self.body below it. Used where
-    nothing may be hidden from the operator (the operator asked for no collapsible 高级 areas).
+    nothing may be hidden from the operator (the operator asked for no collapsible Advanced areas).
     Exposes open()/close()/is_open as no-ops so callers written for Disclosure keep working."""
 
-    def __init__(self, parent, title="高级", on_card=True, **kw):
+    def __init__(self, parent, title="Advanced", on_card=True, **kw):
         kw.setdefault("style", "CardBody.TFrame" if on_card else "TFrame")
         ttk.Frame.__init__(self, parent, **kw)
         self.title = title
@@ -678,11 +678,11 @@ class Section(ttk.Frame):
 
 
 class Disclosure(ttk.Frame):
-    """Collapsible area: a Disclosure.TButton header showing '▸ 高级' / '▾ 高级' and self.body below it.
+    """Collapsible area: a Disclosure.TButton header showing '▸ Advanced' / '▾ Advanced' and self.body below it.
     on_toggle(is_open) is called after every change. The body is grid-forgotten when closed so the
     layout collapses; state is per instance (no persistence)."""
 
-    def __init__(self, parent, title="高级", opened=False, on_toggle=None, on_card=True, **kw):
+    def __init__(self, parent, title="Advanced", opened=False, on_toggle=None, on_card=True, **kw):
         kw.setdefault("style", "CardBody.TFrame" if on_card else "TFrame")
         ttk.Frame.__init__(self, parent, **kw)
         self.title = title
@@ -829,7 +829,7 @@ class PageHeader(ttk.Frame):
 
 class StatusBar(ttk.Frame):
     """fields = [(key, initial_text), ...] rendered as StatusPill(dot=True) separated by TSeparator;
-    action = (text, command) renders a Destructive.TButton at the far right (关闭快门)."""
+    action = (text, command) renders a Destructive.TButton at the far right (Close shutter)."""
 
     def __init__(self, parent, fields, action=None):
         ttk.Frame.__init__(self, parent, style="Sep.TFrame")
@@ -984,13 +984,13 @@ class LogDrawer(ttk.Frame):
         inner.pack(fill="both", expand=True, pady=(1, 0))
         head = ttk.Frame(inner, style="CardBody.TFrame")
         head.pack(fill="x", pady=(0, SPACE["xs"]))
-        ttk.Label(head, text="日志", style="Card.CaptionBold.TLabel").pack(side="left")
-        ttk.Label(head, text="TX/RX 与事件", style="Card.Caption.TLabel").pack(side="left", padx=(SPACE["sm"], 0))
-        self.hide_button = ttk.Button(head, text="收起  ⌃L", command=on_hide, style="Ghost.TButton", takefocus=0)
+        ttk.Label(head, text="Log", style="Card.CaptionBold.TLabel").pack(side="left")
+        ttk.Label(head, text="TX/RX and events", style="Card.Caption.TLabel").pack(side="left", padx=(SPACE["sm"], 0))
+        self.hide_button = ttk.Button(head, text="Collapse  ⌃L", command=on_hide, style="Ghost.TButton", takefocus=0)
         self.hide_button.pack(side="right")
-        self.save_button = ttk.Button(head, text="保存日志…", command=on_save, style="Ghost.TButton", takefocus=0)
+        self.save_button = ttk.Button(head, text="Save log…", command=on_save, style="Ghost.TButton", takefocus=0)
         self.save_button.pack(side="right")
-        self.clear_button = ttk.Button(head, text="清空", command=on_clear, style="Ghost.TButton", takefocus=0)
+        self.clear_button = ttk.Button(head, text="Clear", command=on_clear, style="Ghost.TButton", takefocus=0)
         self.clear_button.pack(side="right")
         body = ttk.Frame(inner, style="CardBody.TFrame")
         body.pack(fill="both", expand=True)
@@ -1109,5 +1109,5 @@ def empty_state(parent, title, hint=None):
 
 
 def confirm_abort(parent):
-    """askyesno('中止序列', ...) with default 'no' - used by the Esc shortcut."""
-    return messagebox.askyesno("中止序列", "将请求中止，当前步骤结束后停止并关闭快门。继续？", default="no", parent=parent)
+    """askyesno('Abort sequence', ...) with default 'no' - used by the Esc shortcut."""
+    return messagebox.askyesno("Abort sequence", "The abort will be requested; the run stops after the current step and closes the shutter. Continue?", default="no", parent=parent)

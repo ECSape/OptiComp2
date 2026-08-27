@@ -40,50 +40,50 @@ def stage(addr, deg, what):
 
 
 def polariser(pol):
-    return stage(cfg.POLARISER, cfg.POL_DEG[pol], "偏振片 %s" % pol)
+    return stage(cfg.POLARISER, cfg.POL_DEG[pol], "polariser %s" % pol)
 
 
 def sample_theta(theta):
-    return Step("stage", "样品台 θ=%g° (台 %.2f°)" % (theta, theta + cfg.SAMPLE_VAR_OFFSET),
+    return Step("stage", "sample θ=%g° (stage %.2f°)" % (theta, theta + cfg.SAMPLE_VAR_OFFSET),
                 addr=cfg.SAMPLE, deg=float(theta) + cfg.SAMPLE_VAR_OFFSET, theta=float(theta))
 
 
 def shutter(open_):
-    return Step("shutter", "快门 %s" % ("开" if open_ else "关"), open=bool(open_))
+    return Step("shutter", "shutter %s" % ("open" if open_ else "close"), open=bool(open_))
 
 
 def set_it(ms, save=False):
     """Set the integration time; with save=True the previous value is remembered for restore_it()."""
-    return Step("set_it", "积分时间 %d ms" % ms, ms=int(ms), save=bool(save))
+    return Step("set_it", "integration time %d ms" % ms, ms=int(ms), save=bool(save))
 
 
 def restore_it():
-    return Step("restore_it", "恢复积分时间")
+    return Step("restore_it", "restore integration time")
 
 
 def auto_it():
-    return Step("auto_it", "自动定标积分时间 (峰值→85%)")
+    return Step("auto_it", "auto integration time (peak -> 85%)")
 
 
 def acquire(tag, avg, **meta):
-    return Step("acquire", "采集 %s (平均 %d)" % (tag, avg), tag=tag, avg=int(avg), meta=meta)
+    return Step("acquire", "acquire %s (avg %d)" % (tag, avg), tag=tag, avg=int(avg), meta=meta)
 
 
 def pause(msg):
-    return Step("pause", "暂停: %s" % msg, msg=msg)
+    return Step("pause", "pause: %s" % msg, msg=msg)
 
 
 def check_theta_range(start, stop, step):
     """Thesis gatekeeper: 0 <= start < stop <= 80, step >= 1. Returns the angle list."""
     if not (cfg.THETA_MIN <= start < stop <= cfg.THETA_MAX):
-        raise ValueError("需要 %d ≤ start < stop ≤ %d (得到 %g, %g)" % (cfg.THETA_MIN, cfg.THETA_MAX, start, stop))
+        raise ValueError("need %d <= start < stop <= %d (got %g, %g)" % (cfg.THETA_MIN, cfg.THETA_MAX, start, stop))
     if step < cfg.STEP_MIN:
-        raise ValueError("步长需 ≥ %d" % cfg.STEP_MIN)
+        raise ValueError("step must be >= %d" % cfg.STEP_MIN)
     return list(np.arange(start, stop + 1e-9, step))
 
 
 def apply_min_it():
-    return Step("apply_min_it", "取 S/P 定标结果中较小的积分时间")
+    return Step("apply_min_it", "take the smaller of the S/P calibration integration times")
 
 
 def build_reset():
@@ -93,9 +93,9 @@ def build_reset():
     unexpected-motion guard still runs on each of these moves (it aborts on the arm if its zero
     may have been lost), so this reset never overrides that safety check."""
     return [shutter(False),
-            stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂归零"),
-            stage(cfg.SAMPLE, cfg.SAMPLE_ZERO, "样品台归零"),
-            stage(cfg.POLARISER, 0.0, "偏振片归零")]
+            stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "detector arm to zero"),
+            stage(cfg.SAMPLE, cfg.SAMPLE_ZERO, "sample stage to zero"),
+            stage(cfg.POLARISER, 0.0, "polariser to zero")]
 
 
 def build_reference_calibration():
@@ -103,7 +103,7 @@ def build_reference_calibration():
     point for specular dielectrics). Measured 2026-08-25 on a diffuse reference the P
     channel was 12 % brighter, so both polarisations are calibrated and the smaller
     integration time is kept."""
-    return [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂零位"), sample_theta(cfg.THETA_MAX), shutter(True),
+    return [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "detector arm zero"), sample_theta(cfg.THETA_MAX), shutter(True),
             polariser("S"), auto_it(), polariser("P"), auto_it(), apply_min_it(), shutter(False)]
 
 
@@ -112,7 +112,7 @@ def build_dark(avg, tag="dark"):
 
 
 def build_single_angle(theta, pols, avg, prefix):
-    steps = [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂零位")]
+    steps = [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "detector arm zero")]
     for pol in pols:
         steps += [polariser(pol), sample_theta(theta), shutter(True),
                   acquire("%s_%s_%g" % (prefix, pol, theta), avg, kind="var", pol=pol, theta=float(theta))]
@@ -122,7 +122,7 @@ def build_single_angle(theta, pols, avg, prefix):
 
 def build_scan(start, stop, step, pols, avg, prefix):
     angles = check_theta_range(start, stop, step)
-    steps = [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂零位")]
+    steps = [stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "detector arm zero")]
     for pol in pols:                        # polariser moves once per polarisation, sample sweeps
         steps.append(polariser(pol))
         for th in angles:
@@ -135,17 +135,17 @@ def build_scan(start, stop, step, pols, avg, prefix):
 def build_double_beam(pols, avg, prefix):
     """Exchange position -> user swaps port cover -> DB geometry -> acquire per polarisation."""
     steps = [shutter(False), set_it(cfg.DB_IT_MS, save=True),
-             stage(cfg.SAMPLE, cfg.SAMPLE_EXCHANGE, "样品台交换位"), stage(cfg.SYSTEM, cfg.SYSTEM_EXCHANGE, "探测臂交换位"),
-             pause("请把积分球端口盖换到 DB（直射）位置，然后点确定"),
-             stage(cfg.SYSTEM, cfg.SYSTEM_DB, "探测臂 DB 位"), stage(cfg.SAMPLE, cfg.SAMPLE_DB, "样品台 DB 位")]
+             stage(cfg.SAMPLE, cfg.SAMPLE_EXCHANGE, "sample stage exchange"), stage(cfg.SYSTEM, cfg.SYSTEM_EXCHANGE, "detector arm exchange"),
+             pause("Move the integrating-sphere port cap to the DB (direct) position, then click OK"),
+             stage(cfg.SYSTEM, cfg.SYSTEM_DB, "detector arm DB"), stage(cfg.SAMPLE, cfg.SAMPLE_DB, "sample stage DB")]
     for pol in pols:
         steps += [polariser(pol), shutter(True), acquire("%s_DB_%s" % (prefix, pol), avg, kind="db", pol=pol)]
     steps += [shutter(False), acquire("dark_db", avg, kind="dark"),        # dark at the DB integration time
               restore_it()]                                                # back to the session integration time
     steps += [
-              stage(cfg.SAMPLE, cfg.SAMPLE_EXCHANGE, "样品台交换位"), stage(cfg.SYSTEM, cfg.SYSTEM_EXCHANGE, "探测臂交换位"),
-              pause("请把端口盖换回正常测量位置，然后点确定"),
-              stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂零位"), stage(cfg.SAMPLE, cfg.SAMPLE_ZERO, "样品台零位")]
+              stage(cfg.SAMPLE, cfg.SAMPLE_EXCHANGE, "sample stage exchange"), stage(cfg.SYSTEM, cfg.SYSTEM_EXCHANGE, "detector arm exchange"),
+              pause("Move the port cap back to the normal measurement position, then click OK"),
+              stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "detector arm zero"), stage(cfg.SAMPLE, cfg.SAMPLE_ZERO, "sample stage zero")]
     return steps
 
 
@@ -367,9 +367,9 @@ class Runner(object):
         except bwtek.BWTekError as e:
             if self.spec_recover is None:
                 raise
-            self.log("光谱仪读取失败 (%s)，尝试自动恢复连接…" % e)
+            self.log("spectrometer read failed (%s), attempting automatic recovery…" % e)
             how = self.spec_recover()
-            self.log("光谱仪已恢复 (%s)，重试本次读取" % how)
+            self.log("spectrometer recovered (%s), retrying this read" % how)
             return self.spec.read(avg, smoothing_type, smoothing_value)
 
     def _auto_it(self):

@@ -394,8 +394,8 @@ def seed_demo_data(data_root, state_path, log=None, prefix="sample"):
         steps = (sq.build_reference_calibration() + sq.build_dark(3) + sq.build_scan(8, 80, 8, ["S", "P"], 3, prefix)
                  + sq.build_double_beam(["S", "P"], 3, prefix))
         runner.run(steps)
-        for st in (sq.polariser("S"), sq.stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "探测臂零位"),
-                   sq.stage(cfg.SAMPLE, cfg.THETA_MAX + cfg.SAMPLE_VAR_OFFSET, "样品台"), sq.shutter(False)):
+        for st in (sq.polariser("S"), sq.stage(cfg.SYSTEM, cfg.SYSTEM_ZERO, "detector arm zero"),
+                   sq.stage(cfg.SAMPLE, cfg.THETA_MAX + cfg.SAMPLE_VAR_OFFSET, "sample stage"), sq.shutter(False)):
             runner.run_step(st)
         stagestate.record(bus, state_path, note="demo seed", ppd=ppd)
         made.append(outdir)

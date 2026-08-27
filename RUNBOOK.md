@@ -1,65 +1,65 @@
-# 开机 / 事故后操作手册（2026-08-27 起）
+# Start-up / post-incident runbook (from 2026-08-27)
 
-前提：原 OptiComp 程序未运行（COM4 与光谱仪独占）；`C:\OptiComp2` 已是最新部署。
+Prerequisite: the original OptiComp program is not running (COM4 and the spectrometer are exclusive); `C:\OptiComp2` is the latest deployment.
 
-## A. 光纤与探测臂（先做，不开灯也能做）
+## A. Fibre and detector arm (do this first, works with the lamp off)
 
-1. 看一眼光纤：走线松弛、没有缠在探测臂 (模块 2) 上。
-2. 只读报告，不动任何电机：
+1. Look at the fibre: the run is slack and not wound around the detector arm (module 2).
+2. Read-only report, do not move any motor:
 
        py tools\restore_stages.py
 
-   预期：模块 2 报 GS02（上次自动回零失败，零点丢失），偏振片约 0°，样品台约 103°，快门关。
-3. 人在旁边盯着探测臂、光纤留足余量，再恢复参考：
+   Expected: module 2 reports GS02 (the last auto-home failed and the zero is lost), polariser about 0°, sample stage about 103°, shutter closed.
+3. With someone watching the detector arm and enough slack in the fibre, restore the reference:
 
        py tools\restore_stages.py --safe --arm
 
-   输入 `YES` 确认。脚本会：偏振片/样品台回零并停到 S (236°) / 185°；探测臂速度设为 50 %（原程序的 2sv32），回零 (ho0) 后停到 44°；
-   写入基线 `data\stage_state.json`。之后所有工具连接时都会与这份基线比对，异常则拒绝运动。
-   若回零时探测臂再次卡住（GS02），立刻关掉 ELLB 供电（拔 ELLB 的 USB）再检查光纤，**不要**重复回零。
+   Type `YES` to confirm. The script will: move the polariser/sample stage to zero and park them at S (236°) / 185°; set the detector-arm speed to 50 % (the original 2sv32), home it (ho0) and park it at 44°;
+   write the baseline `data\stage_state.json`. Every tool then compares against this baseline on connect and refuses motion on an anomaly.
+   If the detector arm stalls again during homing (GS02), immediately cut ELLB power (unplug the ELLB USB) and check the fibre; do **not** re-home.
 
-## B. USB 软重启验证（有人在场时做一次，以后就不用拔线）
+## B. USB soft-restart check (do it once with someone present, then no more unplugging)
 
-`run_manual_gui.bat` 现在会自动请求管理员权限（出现 UAC 对话框点“是”）——GUI 里的
-「恢复 (重开/USB 重启)」按钮需要提权才能重启 USB 设备。
+`run_manual_gui.bat` now requests administrator rights automatically (click "Yes" on the UAC dialog) — the
+GUI's "Recover (reopen / USB restart)" button needs elevation to restart the USB device.
 
-以管理员 PowerShell：
+In an administrator PowerShell:
 
     py tools\usb_reset.py
 
-它对光谱仪做 PnP 重启（等价于插拔，但只作用于光谱仪这一个设备），然后探测读数。
-观察：探测臂不动、`stage_state` 无异常、probe OK。以后 DLL 挂死（读数 -99 / 设备数 0）时：
-GUI 光谱仪页「恢复 (重开/USB 重启)」按钮，或 monitor / cycle_test 会自动调用同一逻辑。
+It does a PnP restart of the spectrometer (equivalent to a replug, but only for the spectrometer device), then reads a probe spectrum.
+Watch: the detector arm does not move, `stage_state` shows no anomaly, the probe is OK. Later, when the DLL hangs (read -99 / device count 0):
+the GUI spectrometer page's "Recover (reopen / USB restart)" button, or monitor / cycle_test, calls the same logic automatically.
 
-关闭 USB 选择性挂起（一次性，管理员）：
+Disable USB selective suspend (one-off, administrator):
 
     powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0
     powercfg /setdcvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0
     powercfg /setactive SCHEME_CURRENT
 
-## C. 光源与 Si 运动循环测试
+## C. Lamp and Si motion cycle test
 
-1. 开光源，预热 ≥ 30 min（快门关）。
-2. Si 装好（20×20 片在 30×30 夹具里，确认贴紧、不晃）：
+1. Turn on the lamp, warm up for >= 30 min (shutter closed).
+2. Mount the Si (the 20x20 wafer in the 30x30 holder, confirm it sits flat and does not wobble):
 
        py tools\cycle_test.py --cycles 3 --frames 20 --moves both --tag si
 
-   日志 `logs\cycle_*.log` 每段给出三个波段相对基线的变化。若某次运动后掉 >2 %，再分别跑
-   `--moves scan`、`--moves exchange`、`--moves sample`、`--moves arm` 定位是哪种运动造成的。
-3. 换白板，重复：`--tag white`。白板稳定而 Si 掉幅 → 样品安装/倾角问题（镜面样品对角度敏感）；
-   两者都掉 → 探测臂/积分球端口重复性问题。
-4. 都稳定后再用 GUI 做完整流程：参考定标 (80°/S,P) → 白板扫描 → Si 扫描 → DB 交换 → 分析页。
+   Log `logs\cycle_*.log` reports, for each cycle, the three bands' change relative to the baseline. If one move drops it by >2 %, run
+   `--moves scan`, `--moves exchange`, `--moves sample`, `--moves arm` separately to find which motion caused it.
+3. Swap in the white board and repeat: `--tag white`. If the white board is stable but Si drops -> a sample-mounting/tilt problem (a specular sample is sensitive to angle);
+   if both drop -> a detector-arm / integrating-sphere port repeatability problem.
+4. Once everything is stable, run the full procedure from the GUI: reference calibration (80°/S,P) -> white-board scan -> Si scan -> DB exchange -> analysis page.
 
-## 无人值守脚本的停止方式
+## How to stop an unattended script
 
-monitor / cycle_test 每帧检查 `C:\OptiComp2\logs\STOP`：要提前结束就在另一个窗口执行
-`New-Item C:\OptiComp2\logs\STOP`，脚本会关快门、存数据、记录状态后退出。
-**不要用 taskkill / 关窗口**——那样 finally 不会执行、快门会一直开着。若已经硬杀了，立刻跑
+monitor / cycle_test checks `C:\OptiComp2\logs\STOP` every frame: to finish early, run
+`New-Item C:\OptiComp2\logs\STOP` in another window and the script will close the shutter, save the data, record the state and exit.
+Do **not** use taskkill / close the window — that skips the finally block and leaves the shutter open. If you already hard-killed it, immediately run
 
     py tools\shutter_close.py
 
-它只做一件事：`0bw` 并核验位置为 0。
+which does exactly one thing: `0bw` and verifies the position is 0.
 
-## D. 结束
+## D. Shutdown
 
-GUI「断开」或退出会记录电机状态并关快门；脚本结束时同样记录。之后不要再插拔该 USB 集线器上的任何线。
+The GUI "Disconnect" or exit records the motor state and closes the shutter; scripts record the same on exit. Afterwards do not plug or unplug anything on that USB hub.

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tk page: compute and plot variable-angle reflectance from two session directories.
 
-Layout: page header (计算 / 导出 / 保存图), an input card and an option card, a warning banner bound
+Layout: page header (Compute / Export / Save figure), an input card and an option card, a warning banner bound
 to note_var, and the result card with the two figures. The computation itself is unchanged.
 """
 import os
@@ -21,19 +21,19 @@ from ui_theme import SPACE, COLORS, Card, Banner, form_row, bind_enter, tooltip
 
 DATA_ROOT = os.path.join(HERE, "..", "data")      # default; the App may point elsewhere (--demo)
 PAGE_PAD = (SPACE["xl"], SPACE["md"], SPACE["xl"], SPACE["md"])
-SUBTITLE = "用参考会话与标准件把样品会话换算为反射率 R(λ, θ)。"
-EMPTY_SESSIONS = "尚无会话：在「测量」页运行一次序列后，data/ 下的会话目录会出现在这里。"
+SUBTITLE = "Reflectance R(λ, θ) from a sample session, a reference, and a standard."
+EMPTY_SESSIONS = "No sessions yet: run a sequence on the Measurement page and session directories under data/ appear here."
 
 TIPS = {
-    "compute": "读取两个会话的 manifest，对 S 与 P 各计算 R(λ, θ) = 样品/参考 × 标准件反射率（可选 DB 修正与背面反射修正）。",
-    "export": "按偏振导出两个 CSV（<名>_S.csv / <名>_P.csv）：第一列波长，其余各列为每个 θ 的 R。",
-    "save_fig": "把当前图保存为 PNG（150 dpi）。",
-    "refresh": "重新扫描 data/ 下含 manifest.json 的会话目录。",
-    "std": "参考件的已知反射率：硅片用 Fresnel 表（含折射率色散），或输入常数（白板 ≈ 0.99）。",
-    "db": "用双光束（DB）采集比值修正积分球端口交换带来的系统差异；需要两个会话都含 DB 步骤。",
-    "back": "样品为玻璃基底时，按 BK7 非相干平板模型扣除背面反射，得到单表面反射率。",
-    "theory": "在 R(θ) 图上叠加硅的 Fresnel 理论曲线，便于用硅片检验仪器。",
-    "lam": "R(θ) 子图取该波长（nm）处的反射率。",
+    "compute": "Read both session manifests and compute R(λ, θ) = sample/reference × standard reflectance for S and P (optional DB and back-reflection correction).",
+    "export": "Export two CSVs by polarisation (<name>_S.csv / <name>_P.csv): first column wavelength, the rest R at each θ.",
+    "save_fig": "Save the current figure as PNG (150 dpi).",
+    "refresh": "Rescan data/ for session directories that contain a manifest.json.",
+    "std": "The known reflectance of the reference: a silicon wafer uses the Fresnel table (with index dispersion), or enter a constant (white board ~ 0.99).",
+    "db": "Use the double-beam (DB) ratio to correct the systematic difference from swapping the integrating-sphere port; both sessions must contain DB steps.",
+    "back": "For a glass substrate, subtract the back reflection with a BK7 incoherent-slab model to get the single-surface reflectance.",
+    "theory": "Overlay the silicon Fresnel theory curve on the R(θ) plot to check the instrument with a silicon wafer.",
+    "lam": "The R(θ) subplot takes the reflectance at this wavelength (nm).",
 }
 
 
@@ -54,12 +54,12 @@ class AnalysisPanel(ttk.Frame):
         px = self.app.theme.px
         self.columnconfigure(0, weight=1)
         self.rowconfigure(3, weight=1)
-        self.header = ui_theme.PageHeader(self, "分析", SUBTITLE,
-                                          actions=[("计算 S 与 P", self.compute, "Primary.TButton"), ("导出 CSV…", self.export), ("保存图…", self.save_fig)])
+        self.header = ui_theme.PageHeader(self, "Analysis", SUBTITLE,
+                                          actions=[("Compute S and P", self.compute, "Primary.TButton"), ("Export CSV…", self.export), ("Save figure…", self.save_fig)])
         self.header.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["lg"]))
-        self.btn_compute = self.header.buttons["计算 S 与 P"]
-        self.btn_export = self.header.buttons["导出 CSV…"]
-        self.btn_save_fig = self.header.buttons["保存图…"]
+        self.btn_compute = self.header.buttons["Compute S and P"]
+        self.btn_export = self.header.buttons["Export CSV…"]
+        self.btn_save_fig = self.header.buttons["Save figure…"]
         tooltip(self.btn_compute, TIPS["compute"])
         tooltip(self.btn_export, TIPS["export"])
         tooltip(self.btn_save_fig, TIPS["save_fig"])
@@ -69,54 +69,54 @@ class AnalysisPanel(ttk.Frame):
         top.columnconfigure(0, weight=3)
         top.columnconfigure(1, weight=2)
         # ---- input card
-        inp = Card(top, title="输入")
+        inp = Card(top, title="Input")
         inp.grid(row=0, column=0, sticky="nsew", padx=(0, SPACE["md"]))
         self.input_card = inp
         f = inp.body
-        self.sample_cb = ttk.Combobox(f, width=24, state="readonly")
-        b_refresh = ttk.Button(f, text="刷新", command=self.refresh_sessions)
+        self.sample_cb = ttk.Combobox(f, width=14, state="readonly")
+        b_refresh = ttk.Button(f, text="Refresh", command=self.refresh_sessions)
         tooltip(b_refresh, TIPS["refresh"])
-        form_row(f, 0, "样品会话", self.sample_cb, b_refresh, label_width=10)
-        self.ref_cb = ttk.Combobox(f, width=24, state="readonly")
-        form_row(f, 1, "参考会话", self.ref_cb, label_width=10)
+        form_row(f, 0, "Sample session", self.sample_cb, b_refresh, label_width=10)
+        self.ref_cb = ttk.Combobox(f, width=14, state="readonly")
+        form_row(f, 1, "Reference session", self.ref_cb, label_width=10)
         for cb in (self.sample_cb, self.ref_cb):
             cb.grid_configure(sticky="ew")               # same right edge as the standard row below
         std_row = ttk.Frame(f, style="CardBody.TFrame")
-        self.std_cb = ttk.Combobox(std_row, width=18, state="readonly", values=["硅片 (Fresnel 表)", "常数 (右侧输入)"])
+        self.std_cb = ttk.Combobox(std_row, width=18, state="readonly", values=["Silicon (Fresnel table)", "Constant (enter at right)"])
         self.std_cb.current(0)
         tooltip(self.std_cb, TIPS["std"])
         self.std_cb.pack(side="left")
-        ttk.Label(std_row, text="常数", style="FormLabel.TLabel").pack(side="left", padx=(SPACE["md"], SPACE["sm"]))
+        ttk.Label(std_row, text="Constant", style="FormLabel.TLabel").pack(side="left", padx=(SPACE["md"], SPACE["sm"]))
         self.const_var = tk.StringVar(value="0.99")
         e_const = ttk.Entry(std_row, textvariable=self.const_var, width=6, justify="right")
         bind_enter(e_const, self.compute)
         e_const.pack(side="left")
-        form_row(f, 2, "参考标准件", std_row, label_width=10)
+        form_row(f, 2, "Reference standard", std_row, label_width=10)
         self.sessions_hint = ttk.Label(f, text=EMPTY_SESSIONS, style="Card.Caption.TLabel", wraplength=px(380), justify="left")
         self.sessions_hint.grid(row=3, column=0, columnspan=4, sticky="w", pady=(SPACE["sm"], 0))
-        f.columnconfigure(1, weight=0)                 # the 刷新 column (2) takes the slack, fields keep their width
+        f.columnconfigure(1, weight=0)                 # the Refresh column (2) takes the slack, fields keep their width
         f.columnconfigure(2, weight=1)
         # ---- options card
-        opt = Card(top, title="选项")
+        opt = Card(top, title="Options")
         opt.grid(row=0, column=1, sticky="nsew")
         self.options_card = opt
         o = opt.body
         o.columnconfigure(0, weight=1)
         self.db_var = tk.BooleanVar(value=True)
-        c1 = ttk.Checkbutton(o, text="双光束 (DB) 替代修正", variable=self.db_var, style="Card.TCheckbutton")
+        c1 = ttk.Checkbutton(o, text="Double-beam (DB) correction", variable=self.db_var, style="Card.TCheckbutton")
         c1.grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
         self.back_var = tk.BooleanVar(value=False)
-        c2 = ttk.Checkbutton(o, text="扣除玻璃背面反射（BK7，非相干平板）", variable=self.back_var, style="Card.TCheckbutton")
+        c2 = ttk.Checkbutton(o, text="Subtract glass back reflection (BK7)", variable=self.back_var, style="Card.TCheckbutton")
         c2.grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
         self.theory_var = tk.BooleanVar(value=True)
-        c3 = ttk.Checkbutton(o, text="叠加硅理论曲线（样品为硅片时）", variable=self.theory_var, style="Card.TCheckbutton")
+        c3 = ttk.Checkbutton(o, text="Overlay silicon theory (wafers)", variable=self.theory_var, style="Card.TCheckbutton")
         c3.grid(row=2, column=0, columnspan=3, sticky="w", pady=2)
         tooltip(c1, TIPS["db"])
         tooltip(c2, TIPS["back"])
         tooltip(c3, TIPS["theory"])
         lam_row = ttk.Frame(o, style="CardBody.TFrame")
         lam_row.grid(row=3, column=0, sticky="w", pady=(SPACE["sm"], 0))
-        ttk.Label(lam_row, text="R(θ) 取波长", style="FormLabel.TLabel").pack(side="left", padx=(0, SPACE["sm"]))
+        ttk.Label(lam_row, text="R(θ) wavelength", style="FormLabel.TLabel").pack(side="left", padx=(0, SPACE["sm"]))
         self.lam_var = tk.StringVar(value="600")
         e_lam = ttk.Entry(lam_row, textvariable=self.lam_var, width=6, justify="right")
         bind_enter(e_lam, self.compute)
@@ -130,7 +130,7 @@ class AnalysisPanel(ttk.Frame):
         self.note_banner.hide()
         self.note_var.trace_add("write", lambda *_a: self._sync_note())
         # ---- result card
-        res = Card(self, title="结果")
+        res = Card(self, title="Results")
         res.grid(row=3, column=0, sticky="nsew", pady=(SPACE["md"], 0))
         self.result_card = res
         body = res.body
@@ -142,7 +142,7 @@ class AnalysisPanel(ttk.Frame):
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         except Exception as e:
-            ttk.Label(body, text="matplotlib 不可用: %s" % e, style="Card.TLabel").grid(row=0, column=0, sticky="w")
+            ttk.Label(body, text="matplotlib unavailable: %s" % e, style="Card.TLabel").grid(row=0, column=0, sticky="w")
             self.canvas = None
             return
         self.fig = Figure(figsize=(9, 3.6), dpi=100)
@@ -152,7 +152,7 @@ class AnalysisPanel(ttk.Frame):
         for ax in (self.ax1, self.ax2):
             ui_theme.mpl_style_axes(ax)
             ax.set_visible(False)
-        self._empty_text = self.fig.text(0.5, 0.5, "选择样品与参考会话后点「计算 S 与 P」。", ha="center", va="center",
+        self._empty_text = self.fig.text(0.5, 0.5, "Select a sample and reference session, then click Compute S and P.", ha="center", va="center",
                                          color=COLORS["text3"], fontsize=10)
         self.fig.tight_layout(pad=1.2)
         self.canvas = FigureCanvasTkAgg(self.fig, master=body)
@@ -164,7 +164,7 @@ class AnalysisPanel(ttk.Frame):
     # ---- presentation helpers ------------------------------------------------
     def _sync_note(self):
         text = self.note_var.get().strip()
-        if text and text != "无警告":
+        if text and text != "No warnings":
             self.note_banner.show(text, "warning")
         else:
             self.note_banner.hide()
@@ -198,7 +198,7 @@ class AnalysisPanel(ttk.Frame):
 
     def compute(self):
         if not self.sample_cb.get() or not self.ref_cb.get():
-            messagebox.showwarning("缺输入", "请选择样品会话与参考会话")
+            messagebox.showwarning("Missing input", "Select a sample session and a reference session")
             return
         try:
             sample = var.Session(os.path.join(self._data_root(), self.sample_cb.get()))
@@ -206,7 +206,7 @@ class AnalysisPanel(ttk.Frame):
             standard = self._standard()
             lam = float(self.lam_var.get())
         except Exception as e:
-            messagebox.showerror("读取失败", str(e))
+            messagebox.showerror("Read failed", str(e))
             return
         self.results = {}
         notes = []
@@ -223,9 +223,9 @@ class AnalysisPanel(ttk.Frame):
                 res.notes.append("back-surface (BK7) correction applied")
             self.results[pol] = res
             notes += ["%s: %s" % (pol, n) for n in res.notes]
-        self.note_var.set("\n".join(notes) if notes else "无警告")
+        self.note_var.set("\n".join(notes) if notes else "No warnings")
         if not self.results:
-            messagebox.showerror("无结果", "\n".join(notes))
+            messagebox.showerror("No results", "\n".join(notes))
             return
         self._plot(lam)
         self.app._log_line("ANALYSIS %s / %s: %s" % (self.sample_cb.get(), self.ref_cb.get(), ", ".join(sorted(self.results))))
@@ -255,11 +255,11 @@ class AnalysisPanel(ttk.Frame):
             for i, th in enumerate(res.thetas):
                 self.ax1.plot(res.wl[ok], res.R[i][ok], ls, color=colors[i], lw=0.8,
                               label="%s %g°" % (pol, th) if i in (0, len(res.thetas) - 1) else None)
-            self.ax2.plot(res.thetas, res.at_wavelength(lam), "o" + ls, ms=4, label="%s 实测 @%g nm" % (pol, lam))
+            self.ax2.plot(res.thetas, res.at_wavelength(lam), "o" + ls, ms=4, label="%s measured @%g nm" % (pol, lam))
             if si_theory is not None:
                 th_grid = np.linspace(min(res.thetas), max(res.thetas), 81)
                 self.ax2.plot(th_grid, [si_theory.reflectance([lam], t, pol)[0] for t in th_grid], ls, color=COLORS["text"], lw=0.8,
-                              label="Si 理论 %s" % pol)
+                              label="Si theory %s" % pol)
         self.ax1.set_xlabel("wavelength (nm)")
         self.ax1.set_ylabel("R")
         self.ax1.set_ylim(0, 1.1)
@@ -274,7 +274,7 @@ class AnalysisPanel(ttk.Frame):
 
     def export(self):
         if not self.results:
-            messagebox.showwarning("无结果", "先点『计算』")
+            messagebox.showwarning("No results", "Click Compute first")
             return
         base = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="R_%s.csv" % self.sample_cb.get())
         if not base:

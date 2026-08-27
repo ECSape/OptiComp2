@@ -21,20 +21,20 @@ import ui_theme
 from ui_theme import SPACE, COLORS, Card, StatusPill, Readout, form_row, bind_enter, tooltip
 
 PAGE_PAD = (SPACE["xl"], SPACE["md"], SPACE["xl"], SPACE["md"])
-SUBTITLE = "B&W Tek 光谱仪：初始化、积分时间与读谱。序列运行期间禁止手动读谱。"
+SUBTITLE = "B&W Tek spectrometer: initialise, integration time and reads. Manual reads are disabled while a sequence runs."
 
 TIPS = {
-    "open": "InitDevices + bwtekTestUSB，然后写入右侧的积分时间。",
-    "close": "关闭 DLL 会话（序列运行中不能关闭）。",
-    "recover": "光谱仪挂死（读数 −99 / 设备数 0）时：先关闭重开；仍失败则对光谱仪的 USB 设备做 PnP 重启（需管理员），不动 Elliptec 所在的集线器。",
-    "set_it": "写入积分时间（bwtekSetTimeUSB）。设置成功后状态栏的积分时间变为「已确认」。",
-    "smooth": "与原程序相同的 DLL 平滑参数（类型 3，宽度 5）；序列采集不使用平滑。",
-    "read": "读取一帧（按「平均」次数平均）。",
-    "live": "每 250 ms 读一帧并刷新图；再点一次停止。",
-    "auto_it": "反复读谱并调整积分时间，直到有效区峰值落在满量程 78–92 %（目标 85 %）；最多 8 步，无光时中止。",
-    "monitor": "连续读取并把每帧峰值与三个波段（450–550 / 600–700 / 800–900 nm）的均值追加写入 data/monitor/*.csv，用于观察光源或探测漂移。",
-    "save": "把最近一帧保存为 CSV（wavelength_nm, counts）。",
-    "auto_y": "勾选：Y 轴随峰值缩放；取消：固定到满量程 65535。",
+    "open": "InitDevices + bwtekTestUSB, then write the integration time set on the right.",
+    "close": "Close the DLL session (not allowed while a sequence runs).",
+    "recover": "When the spectrometer hangs (reads -99 / device count 0): close and reopen first; if that still fails, PnP-restart the spectrometer USB device (needs admin), never the hub the Elliptec bus is on.",
+    "set_it": "Write the integration time (bwtekSetTimeUSB). Once set, the status bar marks the integration time as confirmed.",
+    "smooth": "The same DLL smoothing as the original (type 3, width 5); sequence acquisitions use no smoothing.",
+    "read": "Read one frame (averaged over the Averages count).",
+    "live": "Read a frame every 250 ms and refresh the plot; click again to stop.",
+    "auto_it": "Read and adjust the integration time until the active-region peak lands in 78-92 % of full scale (target 85 %); at most 8 steps, aborts if there is no light.",
+    "monitor": "Read continuously and append each frame peak and the mean of three bands (450-550 / 600-700 / 800-900 nm) to data/monitor/*.csv, to watch source or detector drift.",
+    "save": "Save the latest frame as CSV (wavelength_nm, counts).",
+    "auto_y": "Checked: the Y axis scales to the peak; unchecked: fixed to full scale 65535.",
 }
 
 
@@ -76,26 +76,26 @@ class SpectrometerPanel(ttk.Frame):
     def _build(self):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
-        self.header = ui_theme.PageHeader(self, "光谱仪", SUBTITLE)
+        self.header = ui_theme.PageHeader(self, "Spectrometer", SUBTITLE)
         self.header.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["lg"]))
 
         # ---- device card
-        dev = Card(self, title="设备")
+        dev = Card(self, title="Device")
         dev.grid(row=1, column=0, sticky="ew", pady=(0, SPACE["md"]))
         db = dev.body
         row = ttk.Frame(db, style="CardBody.TFrame")
         row.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["sm"]))
-        self.btn_open = ttk.Button(row, text="初始化光谱仪", command=self.open_dev, style="Primary.TButton")
+        self.btn_open = ttk.Button(row, text="Initialise", command=self.open_dev, style="Primary.TButton")
         self.btn_open.pack(side="left")
-        self.btn_close = ttk.Button(row, text="关闭", command=self.close_dev, state="disabled")
+        self.btn_close = ttk.Button(row, text="Close", command=self.close_dev, state="disabled")
         self.btn_close.pack(side="left", padx=(SPACE["sm"], 0))
-        self.btn_recover = ttk.Button(row, text="恢复连接", command=self.recover_dev, state="disabled")
+        self.btn_recover = ttk.Button(row, text="Recover", command=self.recover_dev, state="disabled")
         self.btn_recover.pack(side="left", padx=(SPACE["sm"], 0))
         tooltip(self.btn_open, TIPS["open"])
         tooltip(self.btn_close, TIPS["close"])
         tooltip(self.btn_recover, TIPS["recover"])
-        self.state_var = tk.StringVar(value="未初始化")
-        self.state_pill = StatusPill(row, text="未初始化", tone="neutral", on_card=True)
+        self.state_var = tk.StringVar(value="Not initialised")
+        self.state_pill = StatusPill(row, text="Not initialised", tone="neutral", on_card=True)
         self.state_pill.pack(side="left", padx=(SPACE["lg"], 0))
         self.state_var.trace_add("write", lambda *_a: self._sync_state_pill())
         self._buttons += [self.btn_open, self.btn_close, self.btn_recover]
@@ -107,49 +107,49 @@ class SpectrometerPanel(ttk.Frame):
         e_it = ttk.Entry(form, textvariable=self.it_var, width=8, justify="right")
         bind_enter(e_it, self.set_it)
         e_it.grid(row=0, column=1, sticky="w", pady=SPACE["xs"])
-        ttk.Label(form, text="积分时间", style="FormLabel.TLabel", width=8, anchor="e").grid(row=0, column=0, sticky="e", padx=(0, SPACE["sm"]))
+        ttk.Label(form, text="Integration", style="FormLabel.TLabel", width=11, anchor="e").grid(row=0, column=0, sticky="e", padx=(0, SPACE["sm"]))
         ttk.Label(form, text="ms", style="Card.Caption.TLabel").grid(row=0, column=2, sticky="w", padx=(SPACE["xs"], SPACE["sm"]))
-        self.btn_set_it = ttk.Button(form, text="设置", command=self.set_it)
+        self.btn_set_it = ttk.Button(form, text="Set", command=self.set_it)
         self.btn_set_it.grid(row=0, column=3, sticky="w")
         tooltip(self.btn_set_it, TIPS["set_it"])
-        ttk.Label(form, text="平均", style="FormLabel.TLabel", anchor="e").grid(row=0, column=4, sticky="e", padx=(SPACE["xl"], SPACE["sm"]))
+        ttk.Label(form, text="Averages", style="FormLabel.TLabel", anchor="e").grid(row=0, column=4, sticky="e", padx=(SPACE["xl"], SPACE["sm"]))
         self.avg_var = tk.StringVar(value="1")
         ttk.Spinbox(form, from_=1, to=50, textvariable=self.avg_var, width=4, justify="right").grid(row=0, column=5, sticky="w")
-        ttk.Label(form, text="次", style="Card.Caption.TLabel").grid(row=0, column=6, sticky="w", padx=(SPACE["xs"], SPACE["sm"]))
+        ttk.Label(form, text="x", style="Card.Caption.TLabel").grid(row=0, column=6, sticky="w", padx=(SPACE["xs"], SPACE["sm"]))
         self.smooth_var = tk.BooleanVar(value=False)
-        cbx = ttk.Checkbutton(form, text="DLL 平滑 (3,5)", variable=self.smooth_var, style="Card.TCheckbutton")
+        cbx = ttk.Checkbutton(form, text="DLL smoothing (3,5)", variable=self.smooth_var, style="Card.TCheckbutton")
         cbx.grid(row=0, column=7, sticky="w", padx=(SPACE["lg"], 0))
         tooltip(cbx, TIPS["smooth"])
         self._buttons.append(self.btn_set_it)
 
         # ---- acquisition card
-        acq = Card(self, title="采集")
+        acq = Card(self, title="Acquisition")
         acq.grid(row=2, column=0, sticky="nsew")
         ab = acq.body
         ab.columnconfigure(0, weight=1)
         ab.rowconfigure(3, weight=1)
         row = ttk.Frame(ab, style="CardBody.TFrame")
         row.grid(row=0, column=0, sticky="ew", pady=(0, SPACE["md"]))
-        self.btn_read = ttk.Button(row, text="单次读取", command=self.read_once, style="Primary.TButton")
+        self.btn_read = ttk.Button(row, text="Read once", command=self.read_once, style="Primary.TButton")
         self.btn_read.pack(side="left")
-        self.btn_live = ttk.Button(row, text="连续读取", command=self.toggle_live, style="Toggle.TButton")
+        self.btn_live = ttk.Button(row, text="Live", command=self.toggle_live, style="Toggle.TButton")
         self.btn_live.pack(side="left", padx=(SPACE["sm"], 0))
-        self.btn_auto = ttk.Button(row, text="自动定标积分时间", command=self.auto_it)
+        self.btn_auto = ttk.Button(row, text="Auto integration time", command=self.auto_it)
         self.btn_auto.pack(side="left", padx=(SPACE["sm"], 0))
-        self.btn_mon = ttk.Button(row, text="漂移监视", command=self.toggle_monitor, style="Toggle.TButton")
+        self.btn_mon = ttk.Button(row, text="Drift monitor", command=self.toggle_monitor, style="Toggle.TButton")
         self.btn_mon.pack(side="left", padx=(SPACE["sm"], 0))
-        self.btn_save = ttk.Button(row, text="保存光谱 CSV…", command=self.save_csv)
+        self.btn_save = ttk.Button(row, text="Save spectrum CSV…", command=self.save_csv)
         self.btn_save.pack(side="left", padx=(SPACE["sm"], 0))
         self.mon = None                   # stability monitor state (see toggle_monitor)
         self.auto_y = tk.BooleanVar(value=True)
-        cby = ttk.Checkbutton(row, text="Y 轴自动缩放", variable=self.auto_y, style="Card.TCheckbutton")
+        cby = ttk.Checkbutton(row, text="Y auto-scale", variable=self.auto_y, style="Card.TCheckbutton")
         cby.pack(side="right")
         for b, key in ((self.btn_read, "read"), (self.btn_live, "live"), (self.btn_auto, "auto_it"), (self.btn_mon, "monitor"),
                        (self.btn_save, "save"), (cby, "auto_y")):
             tooltip(b, TIPS[key])
         self._buttons += [self.btn_read, self.btn_live, self.btn_auto, self.btn_mon]
 
-        self.readout = Readout(ab, [("peak", "峰值"), ("peak_wl", "峰值波长"), ("sat", "饱和像素"), ("mean", "有效区均值")])
+        self.readout = Readout(ab, [("peak", "Peak"), ("peak_wl", "Peak λ"), ("sat", "Sat. px"), ("mean", "Active mean")])
         self.readout.grid(row=1, column=0, sticky="w")
         self.stats_var = tk.StringVar(value="")
         ttk.Label(ab, textvariable=self.stats_var, style="Card.Caption.TLabel").grid(row=2, column=0, sticky="w", pady=(0, SPACE["sm"]))
@@ -160,7 +160,7 @@ class SpectrometerPanel(ttk.Frame):
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         except Exception as e:
-            ttk.Label(ab, text="matplotlib 不可用: %s" % e, style="Card.TLabel").grid(row=3, column=0, sticky="w")
+            ttk.Label(ab, text="matplotlib unavailable: %s" % e, style="Card.TLabel").grid(row=3, column=0, sticky="w")
             self.canvas = None
             return
         self.fig = Figure(figsize=(6.4, 3.0), dpi=100)
@@ -174,7 +174,7 @@ class SpectrometerPanel(ttk.Frame):
         (self.line,) = self.ax.plot(self.wl, np.zeros_like(self.wl), lw=0.9, color=COLORS["accent"])
         self.ax.set_xlim(self.wl[0], self.wl[-1])
         self.ax.set_ylim(0, bwtek.ADC_MAX * 1.02)
-        self._empty_text = ui_theme.mpl_empty(self.ax, "尚未读取光谱。初始化后点「单次读取」。")
+        self._empty_text = ui_theme.mpl_empty(self.ax, "No spectrum yet. Initialise, then click Read once.")
         self.fig.tight_layout(pad=1.2)
         self.canvas = FigureCanvasTkAgg(self.fig, master=ab)
         w = self.canvas.get_tk_widget()
@@ -185,11 +185,11 @@ class SpectrometerPanel(ttk.Frame):
     # ---- presentation helpers ------------------------------------------------
     def _sync_state_pill(self):
         s = self.state_var.get()
-        if s.startswith("已连接") or s.startswith("已恢复"):
+        if s.startswith("Connected") or s.startswith("Recovered"):
             tone = "success"
-        elif s.endswith("中…"):
+        elif s.endswith("…"):
             tone = "warning"
-        elif s.startswith("初始化失败"):
+        elif s.startswith("Init failed"):
             tone = "danger"
         else:
             tone = "neutral"
@@ -197,17 +197,17 @@ class SpectrometerPanel(ttk.Frame):
 
     def _set_live_button(self, active):
         if active:
-            self.btn_live.config(text="停止连续", style="Destructive.TButton")
+            self.btn_live.config(text="Stop live", style="Destructive.TButton")
         else:
-            self.btn_live.config(text="连续读取", style="Toggle.TButton")
+            self.btn_live.config(text="Live", style="Toggle.TButton")
             if getattr(self.app, "sequence_running", False):
                 self.btn_live.config(state="disabled")    # stopped while locked: no restart until the sequence ends
 
     def _set_mon_button(self, active):
         if active:
-            self.btn_mon.config(text="停止监视", style="Destructive.TButton")
+            self.btn_mon.config(text="Stop monitor", style="Destructive.TButton")
         else:
-            self.btn_mon.config(text="漂移监视", style="Toggle.TButton")
+            self.btn_mon.config(text="Drift monitor", style="Toggle.TButton")
             if getattr(self.app, "sequence_running", False):
                 self.btn_mon.config(state="disabled")
 
@@ -222,7 +222,7 @@ class SpectrometerPanel(ttk.Frame):
         if not locked:
             self.btn_close.configure(state="normal" if self.spec else "disabled")
             self.btn_recover.configure(state="normal" if self.spec else "disabled")
-        self.header.set_subtitle(SUBTITLE.rstrip("。") + " · 序列运行中，手动读谱已锁定" if locked else SUBTITLE)
+        self.header.set_subtitle(SUBTITLE.rstrip(".") + " · sequence running, manual reads locked" if locked else SUBTITLE)
 
     # ---- device ------------------------------------------------------------
     def _log(self, text):
@@ -232,10 +232,10 @@ class SpectrometerPanel(ttk.Frame):
         try:
             ms = int(self.it_var.get())               # parsed on the Tk thread, never inside the worker
         except ValueError:
-            messagebox.showerror("输入错误", "积分时间需为整数毫秒")
+            messagebox.showerror("Invalid input", "Integration time must be an integer in ms")
             return
         if ms < 1:
-            messagebox.showerror("输入错误", "积分时间需 ≥ 1 ms")
+            messagebox.showerror("Invalid input", "Integration time must be ≥ 1 ms")
             return
         factory = self.spec_factory
 
@@ -252,13 +252,13 @@ class SpectrometerPanel(ttk.Frame):
                 self.results.put(("ok", "spec open failed", None, lambda _v: self.btn_open.config(state="normal")))
                 raise
             return spec, n
-        self.state_var.set("初始化中…")
+        self.state_var.set("Initialising…")
         self.btn_open.config(state="disabled")        # one open job at a time
         self.worker.submit("spec open", job, self._opened)
 
     def _opened(self, res):
         self.spec, n = res
-        self.state_var.set("已连接 (%d 台), IT %d ms" % (n, self.spec.integration_ms))
+        self.state_var.set("Connected (%d dev), IT %d ms" % (n, self.spec.integration_ms))
         self.btn_open.config(state="disabled")
         self.btn_close.config(state="normal")
         self.btn_recover.config(state="normal")
@@ -272,21 +272,21 @@ class SpectrometerPanel(ttk.Frame):
         self.worker.live.clear()
         self._stop_monitor()
         self._set_live_button(False)
-        self.state_var.set("恢复中…")
+        self.state_var.set("Recovering…")
         spec = self.spec
         self.worker.submit("spec recover", lambda: spec.recover(),
-                           lambda how: self.state_var.set("已恢复 (%s), IT %s ms" % (how, spec.integration_ms)))
+                           lambda how: self.state_var.set("Recovered (%s), IT %s ms" % (how, spec.integration_ms)))
 
     def close_dev(self):
         if getattr(self.app, "sequence_running", False):
-            messagebox.showwarning("序列运行中", "请先中止序列")
+            messagebox.showwarning("Sequence running", "Abort the sequence first")
             return
         self.worker.live.clear()
         self._stop_monitor()
         if self.spec:
             s = self.spec
             self.spec = None
-            self.worker.submit("spec close", s.close, lambda _: self.state_var.set("已关闭"))
+            self.worker.submit("spec close", s.close, lambda _: self.state_var.set("Closed"))
         self.btn_open.config(state="normal")
         self.btn_close.config(state="disabled")
         self.btn_recover.config(state="disabled")
@@ -295,10 +295,10 @@ class SpectrometerPanel(ttk.Frame):
 
     def _need(self):
         if self.spec is None:
-            messagebox.showwarning("未初始化", "请先初始化光谱仪")
+            messagebox.showwarning("Not initialised", "Initialise the spectrometer first")
             return False
         if getattr(self.app, "sequence_running", False):
-            messagebox.showwarning("序列运行中", "序列执行期间禁止手动读谱")
+            messagebox.showwarning("Sequence running", "Manual reads are disabled while a sequence runs")
             return False
         return True
 
@@ -308,12 +308,12 @@ class SpectrometerPanel(ttk.Frame):
         try:
             ms = int(self.it_var.get())
         except ValueError:
-            messagebox.showerror("输入错误", "积分时间需为整数毫秒")
+            messagebox.showerror("Invalid input", "Integration time must be an integer in ms")
             return
 
         def done(r):
             self.it_chosen = True                     # only once the device really accepted it
-            self.state_var.set("已连接, IT %d ms" % r)
+            self.state_var.set("Connected, IT %d ms" % r)
             self.app.refresh_status()
         self.worker.submit("spec set IT", lambda: self.spec.set_integration_time(ms), done)
 
@@ -402,7 +402,7 @@ class SpectrometerPanel(ttk.Frame):
             m["first"] = means
         rel = ["%+.1f%%" % (100.0 * (v / f - 1.0) if f else 0.0) for v, f in zip(means, m["first"])]
         m["n"] += 1
-        txt = "监视 #%d  %.0f s  相对首帧 450-550/600-700/800-900: %s" % (m["n"], el, " / ".join(rel))
+        txt = "Monitor #%d  %.0f s  vs first 450-550/600-700/800-900: %s" % (m["n"], el, " / ".join(rel))
         if m["n"] == 1 or m["n"] % 10 == 0:
             self.app._log_line("SPEC monitor #%d t=%.0fs peak=%d base=%.0f bands=%s rel=%s"
                                % (m["n"], el, st["max"], base, ["%.0f" % v for v in means], rel))
@@ -412,7 +412,7 @@ class SpectrometerPanel(ttk.Frame):
         self.last = counts
         st = bwtek.spectrum_stats(counts)
         it = getattr(self.spec, "integration_ms", None)
-        txt = "最近读取 %s · 积分时间 %s ms · 峰值 %.1f%% 满量程" % (
+        txt = "Last read %s · IT %s ms · peak %.1f%% of full scale" % (
             time.strftime("%H:%M:%S"), it if it else "—", 100.0 * st["max"] / bwtek.ADC_MAX)
         if self.mon:
             txt = self._monitor_frame(counts, st) + "   |   " + txt
@@ -421,7 +421,7 @@ class SpectrometerPanel(ttk.Frame):
         self.readout.set("peak", "%d (%.0f %%)" % (st["max"], pct),
                          "danger" if st["saturated_active"] else ("warning" if pct >= 92 else None))
         self.readout.set("peak_wl", "%.1f nm" % self.wl[st["argmax"]])
-        self.readout.set("sat", "%d（有效区 %d）" % (st["saturated"], st["saturated_active"]), "danger" if st["saturated_active"] else None)
+        self.readout.set("sat", "%d (active %d)" % (st["saturated"], st["saturated_active"]), "danger" if st["saturated_active"] else None)
         self.readout.set("mean", "%.0f" % st["mean_active"])
         if self.canvas:
             if self._empty_text is not None:
@@ -459,20 +459,20 @@ class SpectrometerPanel(ttk.Frame):
                 spec.set_integration_time(it)
             raise RuntimeError("auto-IT did not converge in 8 steps (last %d ms, peak %d)" % (it, peak))
 
-        self.state_var.set("自动定标中…")
+        self.state_var.set("Auto-calibrating…")
         self.worker.submit("spec auto-IT", job, self._auto_it_done)
 
     def _auto_it_done(self, res):
         it, counts = res
         self.it_chosen = True
         self.it_var.set(str(it))
-        self.state_var.set("已连接, IT %d ms (自动定标)" % it)
+        self.state_var.set("Connected, IT %d ms (auto)" % it)
         self._show(counts)
         self.app.refresh_status()
 
     def save_csv(self):
         if self.last is None:
-            messagebox.showwarning("无数据", "先读取一次光谱")
+            messagebox.showwarning("No data", "Read a spectrum first")
             return
         path = filedialog.asksaveasfilename(defaultextension=".csv", initialfile=time.strftime("spectrum_%Y%m%d_%H%M%S.csv"))
         if path:
@@ -490,18 +490,18 @@ class SpectrometerPanel(ttk.Frame):
                 else:
                     self.app._log_line("!! %s failed: %s" % (label, value))
                     if label == "spec open":
-                        self.state_var.set("初始化失败")
+                        self.state_var.set("Init failed")
                         self.btn_open.config(state="normal")
                     if label == "spec auto-IT" and self.spec is not None:
-                        self.state_var.set("已连接, IT %s ms" % self.spec.integration_ms)
+                        self.state_var.set("Connected, IT %s ms" % self.spec.integration_ms)
                     if label == "spec live":
                         self.worker.live.clear()
                         self._set_live_button(False)
                     if label == "sequence":
-                        self.app.sequence._finish("失败/中止: %s" % value)
-                        messagebox.showerror("序列失败", "%s\n\n队列已保留（已完成的步骤带 ✓），修正后可重新运行整个队列。" % value)
+                        self.app.sequence._finish("Failed/aborted: %s" % value)
+                        messagebox.showerror("Sequence failed", "%s\n\nThe queue is kept (completed steps marked ✓); fix the issue and re-run the whole queue." % value)
                     else:
-                        messagebox.showerror("光谱仪错误", "%s\n%s" % (label, value))
+                        messagebox.showerror("Spectrometer error", "%s\n%s" % (label, value))
         except queue.Empty:
             pass
         self.after(100, self._poll)
