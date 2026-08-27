@@ -1,0 +1,403 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=24mm]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{ink}{HTML}{222222}
+\definecolor{accent}{HTML}{0072B2}
+\definecolor{warn}{HTML}{B0632A}
+\definecolor{ok}{HTML}{009E73}
+\definecolor{soft}{HTML}{F5F7F9}
+
+\color{ink}
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.6em}{}
+\setlist{itemsep=2pt,topsep=3pt,parsep=0pt}
+\renewcommand{\arraystretch}{1.25}
+
+\pagestyle{fancy}\fancyhf{}
+\lhead{\small\color{accent}OptiComp2}
+\rhead{\small Operator manual}
+\cfoot{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\key}[1]{\textsf{\small[#1]}}
+
+\newtcolorbox{cautionbox}{colback=warn!7,colframe=warn,boxrule=0.8pt,left=6pt,right=6pt,
+  top=4pt,bottom=4pt,title=\textbf{Caution}}
+\newtcolorbox{notebox}{colback=soft,colframe=accent!55,boxrule=0.6pt,left=6pt,right=6pt,
+  top=4pt,bottom=4pt}
+
+\begin{document}
+
+% ---------------------------------------------------------------- title
+\thispagestyle{empty}
+\vspace*{2.4cm}
+\begin{center}
+{\Huge\bfseries\color{accent} OptiComp2}\\[8pt]
+{\LARGE\bfseries Operator manual}\\[18pt]
+{\large Control software for the angle-resolved (VAR) spectrophotometer}\\[28pt]
+{\large Haoxiang Zhang}\\[6pt]
+{\normalsize August 2026 \quad$\cdot$\quad instrument PC: \code{C:\textbackslash OptiComp2} \quad$\cdot$\quad Python 3.9}
+\end{center}
+\vfill
+\begin{notebox}
+\small This manual covers day-to-day operation of OptiComp2: safety, start-up, the graphical
+interface, running a measurement, analysis, the command-line tools, and recovery. Read
+\textbf{Section~2 (Safety)} before touching the instrument. The original OptiComp program must not be
+running at the same time --- the serial bus and the spectrometer are exclusive resources.
+\end{notebox}
+\newpage
+
+\tableofcontents
+\newpage
+
+% ---------------------------------------------------------------- 1
+\section{Introduction}
+
+OptiComp2 drives an angle-resolved spectrophotometer that measures the variable-angle reflectance
+(VAR) of a sample as a function of wavelength and incidence angle, in two linear polarisations (S and
+P). The instrument comprises:
+
+\begin{itemize}
+\item A \textbf{Thorlabs Elliptec} rotation-stage assembly on one serial bus (COM4), with four
+addressed modules: a shutter (address~0), a polariser (address~1), the \textbf{detector arm}
+(address~2, which carries the collection fibre), and the \textbf{sample stage} (address~3).
+\item A \textbf{B\&W~Tek} fibre spectrometer accessed through \code{BWTEKUSB.dll}.
+\item A broadband lamp and an integrating sphere / detector optic fed by the collection fibre.
+\end{itemize}
+
+A measurement combines a \emph{sample} session and a \emph{reference} session (a diffuse white board,
+or silicon as a Fresnel standard). Reflectance is computed by double-beam substitution so that lamp
+and system throughput cancel. OptiComp2 reproduces the original instrument geometry and measurement
+model and adds the verification, calibration and recovery described in the change list.
+
+% ---------------------------------------------------------------- 2
+\section{Safety and hardware cautions}
+
+These are the rules that protect the instrument and the data. They are enforced in software where
+possible, but the operator is the last line of defence.
+
+\begin{cautionbox}
+\textbf{Never home the detector arm (module 2) casually.} It carries the collection fibre; homing it
+can wind and snap the fibre. \code{home("2")} is refused unless \code{force=True}, and the raw command
+channel refuses to send \code{ho} to a protected address. The arm is moved only by absolute
+positioning to its 44$^\circ$ zero. If it must be re-homed, do it only with the fibre slack and
+someone watching (Section~4).
+\end{cautionbox}
+
+\begin{cautionbox}
+\textbf{Do not replug USB on the instrument hub while the arm is away from zero.} The Elliptec bus
+board (ELLB) is USB-powered and shares a hub with the spectrometer. \emph{Any} power cycle on that hub
+makes all rotation modules auto-home on power-up: the polariser and sample stage snap to 0$^\circ$ and
+the detector arm attempts a home it may stall on (\code{GS02}), losing its zero. Use
+\code{tools\textbackslash usb\_reset.py} (a PnP restart of the spectrometer only) instead of a
+physical replug.
+\end{cautionbox}
+
+\begin{cautionbox}
+\textbf{Never hard-kill a running script.} Closing the window or using \code{taskkill} skips the
+cleanup that closes the shutter. To stop an unattended script use the \code{STOP} file
+(Section~8). If a script was already hard-killed, immediately run
+\code{py tools\textbackslash shutter\_close.py} to close and verify the shutter.
+\end{cautionbox}
+
+\noindent Software safeguards that back these rules:
+\begin{itemize}
+\item The stage-state record (\code{data\textbackslash stage\_state.json}) is compared on every
+connect and script start; a position jump $>0.5^\circ$, a non-zero status code or a changed speed is
+flagged, and unattended scripts abort on an anomaly.
+\item A blocked home (\code{GS02}) is never retried automatically; a stalled relative move is retried
+as an absolute move to the original target; a reply line cut by the read timeout is discarded, never
+decoded.
+\item The Runner closes the shutter whenever a sequence fails or is aborted, and the GUI closes it on
+exit; auto integration time \emph{aborts} rather than using a non-converged value.
+\end{itemize}
+
+% ---------------------------------------------------------------- 3
+\section{Installation and layout}
+
+OptiComp2 runs on the instrument PC under Python~3.9; it needs \code{numpy}, \code{pyserial},
+\code{matplotlib} and Tk (bundled with Python). The spectrometer USB recovery uses \code{pnputil},
+which requires an elevated process --- the launcher self-elevates.
+
+\begin{center}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.30\linewidth} >{\raggedright\arraybackslash}p{0.62\linewidth}}
+\toprule
+\textbf{Location} & \textbf{Contents} \\
+\midrule
+\code{hw/} & Hardware layers: \code{elliptec.py} (bus protocol), \code{bwtek.py} (spectrometer),
+\code{stagestate.py} (motor-state record), \code{config.py} (geometry, limits, speeds). \\
+\code{tools/} & \code{manual\_gui.py} (the GUI), \code{sequence.py} (step builders + Runner),
+and the command-line tools (Section~8). \\
+\code{analysis/} & \code{var.py} (reflectance) and \code{standards.py} (silicon, BK7, constant). \\
+\code{tests/} & Unit tests: \code{py -m unittest discover -s tests}. \\
+\code{data/}, \code{standards/} & Measurement sessions and reference tables (never overwritten by a
+code deployment). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Launch the GUI by double-clicking \code{run\_manual\_gui.bat} (it requests administrator
+rights --- click \textbf{Yes} on the UAC dialog) or from a shell:
+\begin{quote}\code{py tools\textbackslash manual\_gui.py}\end{quote}
+To try the interface without any hardware, use the offline demo: \code{py tools\textbackslash
+manual\_gui.py -{}-demo}. It never opens the serial port or the DLL.
+
+% ---------------------------------------------------------------- 4
+\section{Start-of-day and post-incident procedure}
+
+Follow this after any bus power event (a USB replug, a power blip) or at the start of a measurement
+day. It restores the stage reference safely.
+
+\subsection{A. Fibre and detector arm (lamp off)}
+\begin{enumerate}
+\item Look at the fibre: the run is slack and not wound around the detector arm.
+\item Read-only report, moves no motor: \quad\code{py tools\textbackslash restore\_stages.py}\\
+Expect: module~2 reports \code{GS02} if its last auto-home failed (zero lost), the polariser near
+0$^\circ$, the sample stage near 103$^\circ$, the shutter closed.
+\item With the fibre slack and someone watching the arm, restore the reference:
+\quad\code{py tools\textbackslash restore\_stages.py -{}-safe -{}-arm}\\
+Type \code{YES} to confirm. The script parks the polariser/sample stage, sets the arm speed to 50\,\%,
+homes the arm and parks it at 44$^\circ$, and writes the baseline \code{stage\_state.json}. If the arm
+stalls again while homing (\code{GS02}), cut ELLB power immediately and check the fibre --- do
+\emph{not} re-home.
+\end{enumerate}
+
+\subsection{B. USB soft-restart check (once, with someone present)}
+In an administrator shell: \quad\code{py tools\textbackslash usb\_reset.py}\\
+It does a PnP restart of the spectrometer (equivalent to a replug, but only the spectrometer device)
+and reads a probe spectrum. Watch that the arm does not move and the state shows no anomaly. Later,
+when the DLL hangs (read $-99$, device count 0), the GUI's \textbf{Recover} button and the monitor and
+cycle tools call the same logic automatically.
+
+\subsection{C. Lamp and motion cycle test}
+Turn on the lamp and warm up for $\ge 30$~min with the shutter closed. Mount silicon and run a
+motion-cycle stability check:
+\begin{quote}\code{py tools\textbackslash cycle\_test.py -{}-cycles 3 -{}-frames 20 -{}-moves both -{}-tag si}\end{quote}
+The log reports each band's change relative to the baseline; if one motion drops the signal by
+$>2\,\%$, isolate it (\code{-{}-moves arm}, \code{-{}-moves sample}, \dots). Repeat with the white
+board (\code{-{}-tag white}) to separate a sample-mounting problem from a detector-arm repeatability
+problem.
+
+\subsection{D. Shutdown}
+Use the GUI's \textbf{Disconnect}/exit or let a script finish normally --- both record the motor state
+and close the shutter. Afterwards do not plug or unplug anything on that USB hub.
+
+% ---------------------------------------------------------------- 5
+\section{The graphical interface}
+
+\subsection{Pages}
+A sidebar switches between five pages:
+\begin{enumerate}
+\item \textbf{Instrument} --- connect/disconnect, a quick-start checklist, live motor state and notes.
+\item \textbf{Motors \& shutter} --- manual moves and the shutter.
+\item \textbf{Spectrometer} --- open the device, set or auto-calibrate the integration time, read a
+frame, live view, and the \textbf{Recover} button.
+\item \textbf{Measurement} --- build and run a sequence; live spectrum preview and a completed-
+acquisition table.
+\item \textbf{Analysis} --- compute and export reflectance from stored sessions.
+\end{enumerate}
+
+\subsection{Status bar and the emergency shutter}
+A persistent status bar shows the serial port, spectrometer, integration time, shutter, detector-arm
+angle and sequence state. A red \textbf{Close shutter} button is available from every page.
+
+\subsection{Keyboard shortcuts}
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\key{Ctrl/Cmd\,+\,1..5} & switch to page 1--5 \\
+\key{Ctrl/Cmd\,+\,R} & run the current sequence \\
+\key{Esc} & abort the running sequence \\
+\key{F5} & query all instrument info \\
+\key{Ctrl/Cmd\,+\,L} & toggle the log drawer \\
+\key{Ctrl/Cmd\,+\,Shift\,+\,S} & save the log to a file \\
+\bottomrule
+\end{tabular}
+\end{center}
+The emergency \textbf{Close shutter} button has deliberately no shortcut (so it cannot be triggered by
+accident). Manual controls are locked while a sequence runs.
+
+% ---------------------------------------------------------------- 6
+\section{Running a measurement}
+
+\subsection{Connect}
+On the \textbf{Instrument} page, connect the bus and open the spectrometer. On connect, OptiComp2 sets
+the detector-arm and sample-stage speeds to 50\,\% and compares the stage state against the baseline;
+resolve any anomaly (Section~4) before measuring.
+
+\subsection{Reference calibration (with auto integration time)}
+Build a \textbf{reference calibration} step on the Measurement page. It moves the detector arm to its
+zero and the sample to the calibration angle (80$^\circ$), opens the shutter, and calibrates the
+integration time \emph{automatically} in both S and P, keeping the smaller of the two:
+\begin{itemize}
+\item The peak is driven toward 85\,\% of full scale (accept band 78--92\,\%) by linear
+extrapolation, halving on saturation, in at most eight steps.
+\item A dim target legitimately needs a long exposure (silicon at 80$^\circ$ in P calibrates at tens
+of seconds); each long read is announced so it is not mistaken for a hang.
+\item If the band cannot be reached even at the 60\,s hardware ceiling, the calibration \textbf{aborts
+with a diagnostic} (reference in place? lamp warmed up? fibre? shutter?) rather than using a bad value.
+\end{itemize}
+
+\begin{notebox}
+\small\textbf{Lamp-stability gate.} By default, the reference calibration waits for the lamp to settle
+before calibrating: the active-band mean must hold within 0.5\,\% for five consecutive reads (it warns
+and proceeds after a timeout, never blocking). This prevents lamp drift between the reference and
+sample sessions from biasing the reflectance. Three toggles on the Measurement page's progress row
+control the pre-run behaviour: \textbf{Reconnect} (reopen the spectrometer), \textbf{Zero} (return all
+stages to zero), and \textbf{Stabilise} (the lamp-stability gate).
+\end{notebox}
+
+\subsection{Dark, single angle, scan and double beam}
+\begin{itemize}
+\item \textbf{Dark} --- a shutter-closed frame stored per integration time (\code{dark\_997ms.csv}),
+matched to the spectrum during analysis.
+\item \textbf{Single angle} --- one polarisation and angle.
+\item \textbf{Scan} --- an angle range in one or both polarisations; the gatekeeper enforces
+$0 \le \text{start} < \text{stop} \le 80$ and step $\ge 1$.
+\item \textbf{Double beam (DB)} --- the port-cap exchange step at a fixed 1000\,ms integration time,
+with its own dark; the sequence pauses for the physical exchange.
+\end{itemize}
+
+\noindent Run with \key{Ctrl+R}. Each acquisition is written to a session directory and appended to
+its \code{manifest.json}; the completed-acquisition table updates live. If a run fails or is aborted,
+the shutter is closed automatically.
+
+% ---------------------------------------------------------------- 7
+\section{Analysis}
+
+On the \textbf{Analysis} page, select a sample session, a reference session and a standard, then
+compute. Reflectance uses the double-beam substitution relation
+\[
+R_x = \frac{S_x-S_d}{S_y-S_d}\cdot\frac{S_{cy}-S_d}{S_{cx}-S_d}\cdot R_y ,
+\]
+where $x$ is the sample, $y$ the reference, $S_d$ the matching dark, and the $S_c$ terms the
+double-beam channel. Key points:
+\begin{itemize}
+\item Darks are matched by integration time; if they differ, counts are normalised per millisecond and
+a note is recorded.
+\item Active pixels are 254--2030 inclusive (1777 pixels).
+\item Standards: a constant (white reference), a silicon Fresnel table (real $n$; invalid below
+380\,nm and exported as \code{NaN}), a BK7 Sellmeier model and a slab back-surface inversion.
+\item Saturated pixels and invalid wavelengths are exported as \code{NaN}, never as a spurious
+reflectance.
+\end{itemize}
+Results can be exported to CSV and the figure saved.
+
+% ---------------------------------------------------------------- 8
+\section{Command-line tools}
+
+All tools live in \code{tools\textbackslash} and are run with \code{py tools\textbackslash <name>.py}.
+
+\begin{center}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.26\linewidth} >{\raggedright\arraybackslash}p{0.66\linewidth}}
+\toprule
+\textbf{Tool} & \textbf{Purpose} \\
+\midrule
+\code{restore\_stages.py} & Read-only bus report; \code{-{}-safe -{}-arm} restores the reference under
+supervision (needs an interactive terminal to type \code{YES}). \\
+\code{usb\_reset.py} & Probe, or PnP-restart the spectrometer USB device (administrator). \\
+\code{shutter\_close.py} & Close and verify the shutter (position 0) after a hard-killed script. \\
+\code{monitor.py} & Unattended stability monitor: continuous reads at a fixed geometry logged to CSV
+with each band's change relative to the first frame. \\
+\code{cycle\_test.py} & Motion-cycle test (\code{sample}/\code{arm}/\code{scan}/\code{exchange}/
+\code{both}), a dark per cycle, automatic recovery. \\
+\code{ell\_probe.py}, \code{spec\_probe.py} & Read-only probes of the bus and the spectrometer. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Stopping an unattended script}
+\code{monitor.py} and \code{cycle\_test.py} check for \code{logs\textbackslash STOP} every frame. To
+finish early, create the file:
+\begin{quote}\code{New-Item C:\textbackslash OptiComp2\textbackslash logs\textbackslash STOP}\end{quote}
+The script then closes the shutter, saves its data, records the state and exits. Do \emph{not} use
+\code{taskkill} or close the window --- that skips the cleanup and can leave the shutter open.
+
+% ---------------------------------------------------------------- 9
+\section{Recovery and troubleshooting}
+
+\begin{center}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.34\linewidth} >{\raggedright\arraybackslash}p{0.58\linewidth}}
+\toprule
+\textbf{Symptom} & \textbf{Action} \\
+\midrule
+Spectrometer read returns $-99$ / device count 0 (DLL hung). &
+Press \textbf{Recover} on the Spectrometer page (or let monitor/cycle recover): it reopens the DLL,
+then PnP-restarts the spectrometer USB device. Needs the elevated launcher. \\
+Detector arm reports \code{GS02} (home failed, zero lost). &
+Do \emph{not} re-home casually. Follow Section~4A with the fibre slack and someone watching. \\
+A move seems to do nothing. &
+OptiComp2 verifies position and resends up to three times; if it still cannot confirm, it raises. Check
+the stage mechanically. \\
+Auto integration time aborts ``no light'' / ``too dim''. &
+Check the reference is in place, the lamp is warm, the fibre is connected and the shutter opened. \\
+Stage-state anomaly banner on connect. &
+A module moved between sessions (often an auto-home after a power event). Verify positions and restore
+the reference (Section~4A) before measuring. \\
+Shutter left open after a crash. &
+\code{py tools\textbackslash shutter\_close.py} (does exactly one thing: close and verify position 0). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ---------------------------------------------------------------- 10
+\section{Data and file conventions}
+
+\begin{itemize}
+\item One \code{manifest.json} per session directory, written atomically; an unreadable manifest is
+moved aside as \code{manifest.json.corrupt\_<time>} rather than overwritten.
+\item Darks are stored per integration time (\code{dark\_997ms.csv}, \code{dark\_db\_1000ms.csv}); the
+analysis picks the dark whose integration time matches the spectrum.
+\item Spectra are stored as raw counts; smoothing is display-only.
+\item The stage-state record \code{data\textbackslash stage\_state.json} holds each module's last
+position, status and speed, and is the baseline for the anomaly check.
+\end{itemize}
+
+\appendix
+% ---------------------------------------------------------------- A
+\section{Geometry and configuration reference}
+
+\begin{center}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.42\linewidth} l}
+\toprule
+\textbf{Constant} & \textbf{Value} \\
+\midrule
+Bus addresses (shutter / polariser / arm / sample) & 0 / 1 / 2 / 3 \\
+Polariser angles (P, S) & 146$^\circ$, 236$^\circ$ \\
+Detector-arm zero (\code{SYSTEM\_ZERO}) & 44$^\circ$ \\
+Detector-arm double-beam / exchange & 124$^\circ$ / 150$^\circ$ \\
+Sample zero / VAR offset & 103$^\circ$ / 105$^\circ$ ($\text{stage} = \theta + 105$) \\
+Angle range / minimum step & 0--80$^\circ$ / 1$^\circ$ \\
+Soft limits (arm, sample) & 0--200$^\circ$ \\
+Stage speeds applied on connect & 50\,\% \\
+Protected home & detector arm (address 2) \\
+State tolerance & 0.5$^\circ$ \\
+Double-beam integration time & 1000\,ms \\
+Lamp-stability gate & 0.5\,\% for 5 reads, $\le$60-read timeout \\
+Spectrometer USB VID (for PnP restart) & \code{VID\_16A3} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\vspace{1em}
+\begin{notebox}
+\small \textbf{Golden rules.} (1) The original OptiComp is closed. (2) The fibre arm is never homed
+casually. (3) No USB replug on the instrument hub while the arm is away from zero --- use
+\code{usb\_reset.py}. (4) Never hard-kill a script --- use the \code{STOP} file, and
+\code{shutter\_close.py} if you already did. (5) Resolve any stage-state anomaly before measuring.
+\end{notebox}
+
+\end{document}

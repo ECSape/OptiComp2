@@ -409,6 +409,12 @@ class App(tk.Tk):
         else:
             self.state_path = os.path.join(self.data_root, "stage_state.json") if self.demo else cfg.STATE_FILE
         self.title("OptiComp2 v%s%s" % (__version__, " · Demo mode" if self.demo else ""))
+        try:
+            _ico = os.path.join(repo, "logo2.ico")      # window / taskbar icon (Windows .ico); ignored elsewhere
+            if os.path.exists(_ico):
+                self.iconbitmap(_ico)
+        except Exception:
+            pass
         self.bus = None
         self.bus_port = None
         self.ppd = None

@@ -17,3 +17,14 @@ docs/thesis/fig-*.png
 
 # macOS
 .DS_Store
+
+# LaTeX build artefacts (any docs subdir)
+docs/**/*.aux
+docs/**/*.out
+docs/**/*.toc
+docs/**/*.fls
+docs/**/*.fdb_latexmk
+docs/**/*.synctex.gz
+
+# Thesis chapter kept out of the public repository
+docs/thesis/
