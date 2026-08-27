@@ -263,6 +263,8 @@ def spectrum_stats(counts):
 IT_MIN_MS = 1
 IT_MAX_MS = 60000
 AUTO_IT_DARK_MS = 4000      # still no signal at this integration time: nothing to calibrate on
+SLOW_READ_MS = 5000         # an auto-IT read at or above this is announced as a long exposure (not a
+                            # hang); a normal white reference calibrates at ~1400 ms.
 IT_TARGET = 0.85            # aim the peak at 85 % of full scale
 IT_BAND = (0.78, 0.92)      # accept when the peak lands in this band
 

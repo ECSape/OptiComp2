@@ -398,7 +398,15 @@ class Runner(object):
                 return it
             if peak - base < 50 and it >= bwtek.AUTO_IT_DARK_MS:
                 raise RuntimeError("auto-IT: no light at %d ms (shutter closed? lamp off? fibre?)" % it)
-            it = bwtek.next_integration_time(it, peak, base)
+            # at the hardware ceiling and still short of the accept band: fail after THIS one read rather
+            # than repeat multi-second ceiling reads (which looks like a hang) - the target is too dim
+            if it >= bwtek.IT_MAX_MS and peak < bwtek.IT_BAND[0] * bwtek.ADC_MAX:
+                raise RuntimeError("auto-IT: target too dim - only %.0f%% of full scale at the %d ms ceiling "
+                                   "(reference in place? lamp warmed up? fibre? shutter?)"
+                                   % (100.0 * peak / bwtek.ADC_MAX, it))
+            it = bwtek.next_integration_time(it, peak, base)      # already clamped to IT_MAX_MS
+            if it >= bwtek.SLOW_READ_MS:
+                self.log("auto-IT: next read is a long %.0f s exposure at %d ms (not a hang)" % (it / 1000.0, it))
             self.spec.set_integration_time(it)
         raise RuntimeError("auto-IT did not converge in 8 steps (last %d ms, peak %d)" % (it, peak))
 

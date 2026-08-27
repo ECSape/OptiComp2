@@ -99,15 +99,15 @@ class SequencePanel(ttk.Frame):
         # so the operator no longer power-cycles the USB or reconnects between samples (kept on the band
         # row to stay within the 720 px height budget). The fibre arm is moved to its zero, never homed.
         self.autoreconnect_var = tk.BooleanVar(value=True)
-        cb_rc = ttk.Checkbutton(band, text="Reconnect spec", variable=self.autoreconnect_var, style="TCheckbutton")
+        cb_rc = ttk.Checkbutton(band, text="Reconnect", variable=self.autoreconnect_var, style="TCheckbutton")
         cb_rc.grid(row=0, column=2, sticky="e", padx=(SPACE["md"], 0))
         tooltip(cb_rc, TIPS["reconnect"])
         self.autoreset_var = tk.BooleanVar(value=True)
-        cb_z = ttk.Checkbutton(band, text="Zero positions", variable=self.autoreset_var, style="TCheckbutton")
+        cb_z = ttk.Checkbutton(band, text="Zero", variable=self.autoreset_var, style="TCheckbutton")
         cb_z.grid(row=0, column=3, sticky="e", padx=(SPACE["sm"], 0))
         tooltip(cb_z, TIPS["zero"])
         self.stabilise_var = tk.BooleanVar(value=True)
-        cb_s = ttk.Checkbutton(band, text="Lamp-stable gate", variable=self.stabilise_var, style="TCheckbutton")
+        cb_s = ttk.Checkbutton(band, text="Stabilise", variable=self.stabilise_var, style="TCheckbutton")
         cb_s.grid(row=0, column=4, sticky="e", padx=(SPACE["sm"], 0))
         tooltip(cb_s, TIPS["stabilise"])
         self._set_band_tone("idle")

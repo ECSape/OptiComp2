@@ -424,5 +424,27 @@ class HWF02StabilityGateTests(unittest.TestCase):
         self.assertFalse(r._wait_stable(threshold_pct=0.1, need=5, max_reads=8))   # warns, returns False
         self.assertTrue(any("not stable" in t for t in logs))
 
+
+
+class AutoITCeilingTests(unittest.TestCase):
+    def test_too_dim_target_fails_fast_at_the_hw_ceiling(self):
+        # a non-dark but too-dim target (below the accept band even at the 60 s hardware ceiling) must
+        # fail after ONE ceiling read - not repeat several multi-second ceiling reads (which looks like
+        # a hang) nor be rejected below the ceiling (a legitimately dim reference, e.g. Si at 80 deg P,
+        # still calibrates at tens of seconds)
+        spec = FakeSpec(level=80)               # peak ~48900 (75%) at the 60000 ms ceiling: below 78%
+        r = sq.Runner(FakeBus(), spec, tempfile.mkdtemp())
+        with self.assertRaises(RuntimeError) as cm:
+            r._auto_it()
+        self.assertIn("too dim", str(cm.exception))
+        self.assertLessEqual(len(spec.reads), 3)                  # fail-fast, not 8 blind ceiling reads
+        self.assertGreaterEqual(spec.integration_ms, bwtek.IT_MAX_MS)   # it did reach the hardware ceiling
+
+    def test_flat_dark_still_aborts_with_no_light(self):
+        r = sq.Runner(FakeBus(), FakeSpec(level=0), tempfile.mkdtemp())      # peak == baseline
+        with self.assertRaises(RuntimeError) as cm:
+            r._auto_it()
+        self.assertIn("no light", str(cm.exception))
+
 if __name__ == "__main__":
     unittest.main()
