@@ -506,14 +506,18 @@ class SequencePanel(ttk.Frame):
             box = {"ok": False}
 
             def show():
-                prev = self.prog_var.get()
-                self.prog_var.set("Waiting for operator: %s" % msg)
-                self._set_band_tone("paused")
-                self.app.refresh_status()
+                prev = None
                 try:
+                    prev = self.prog_var.get()
+                    self.prog_var.set("Waiting for operator: %s" % msg)
+                    self._set_band_tone("paused")
+                    self.app.refresh_status()
                     box["ok"] = messagebox.askokcancel("Sequence paused", msg)
                 finally:
-                    self.prog_var.set(prev)
+                    # the worker blocks on ev.wait() with no timeout: ev.set() must ALWAYS fire,
+                    # otherwise a raise anywhere above deadlocks the sequence thread forever
+                    if prev is not None:
+                        self.prog_var.set(prev)
                     self._set_band_tone("running")
                     ev.set()
             self.events.put(("call", show))
@@ -619,7 +623,7 @@ class SequencePanel(ttk.Frame):
         if not rec.get("preview_only"):
             self._add_done(rec)
             n = len(self.done_tree.get_children())
-        self.done_card.set_title("Completed acquisitions · %s · %d" % (os.path.basename(self.session_var.get().strip()), n))
+            self.done_card.set_title("Completed acquisitions · %s · %d" % (os.path.basename(self.session_var.get().strip()), n))
         peak = int(rec.get("peak") or 0)
         self.preview_var.set("%s   IT %s ms   peak %d (%.0f%%)" % (rec.get("tag"), rec.get("integration_ms"), peak, 100.0 * peak / bwtek.ADC_MAX))
         if self.canvas:
@@ -670,26 +674,35 @@ class SequencePanel(ttk.Frame):
     def _poll(self):
         try:
             while True:
-                kind, payload = self.events.get_nowait()
-                if kind == "log":
-                    self.app._log_line("SEQ " + payload)
-                elif kind == "progress":
-                    i, n, text = payload
-                    self.bar["value"] = i
-                    self._mark_progress(i)
-                    self._derive_state(i)
-                    # the Runner's final progress(n, n) travels through self.events while _done/_failed
-                    # arrive through the spectrometer worker queue: whichever is polled first wins, so
-                    # a late progress event must not overwrite the finished/failed text
-                    if self.running:
-                        self.prog_var.set("%d/%d  %s" % (i, n, text))
-                        self._set_band_tone("running")
-                elif kind == "spectrum":
-                    self._show_spectrum(*payload)
-                elif kind == "call":
-                    payload()
-                elif kind == "failed":
-                    self._failed(*payload)
-        except queue.Empty:
-            pass
-        self.after(100, self._poll)
+                try:
+                    kind, payload = self.events.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if kind == "log":
+                        self.app._log_line("SEQ " + payload)
+                    elif kind == "progress":
+                        i, n, text = payload
+                        self.bar["value"] = i
+                        self._mark_progress(i)
+                        self._derive_state(i)
+                        # the Runner's final progress(n, n) travels through self.events while _done/_failed
+                        # arrive through the spectrometer worker queue: whichever is polled first wins, so
+                        # a late progress event must not overwrite the finished/failed text
+                        if self.running:
+                            self.prog_var.set("%d/%d  %s" % (i, n, text))
+                            self._set_band_tone("running")
+                    elif kind == "spectrum":
+                        self._show_spectrum(*payload)
+                    elif kind == "call":
+                        payload()
+                    elif kind == "failed":
+                        self._failed(*payload)
+                except Exception as e:
+                    # one bad event must never kill the pump (it drives progress, previews and _finish)
+                    try:
+                        self.app._log_line("SEQ poll handler error (%s): %s" % (kind, e))
+                    except Exception:
+                        pass
+        finally:
+            self.after(100, self._poll)

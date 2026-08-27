@@ -274,7 +274,9 @@ class ElliptecBus(object):
         while True:
             try:
                 rep = self.query(addr, "gs", timeout=self.poll_timeout, expect=("GS", "PO"))
-            except ReplyTimeout:
+            except ElliptecError:
+                # ReplyTimeout (no reply -> still moving) OR a stray-line burst that trips the
+                # generic parser: treat both as "not idle yet" and keep polling until motion_timeout
                 rep = None
             if rep is not None:
                 if rep["kind"] == "PO":

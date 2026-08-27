@@ -118,5 +118,43 @@ class ReflectanceTests(unittest.TestCase):
             s.net(s.records[1])
 
 
+
+
+class MaskRegressionTests(unittest.TestCase):
+    def test_invalid_wavelengths_exported_as_nan(self):
+        # Si tabulation is invalid below 380 nm: save_csv / at_wavelength must emit NaN there,
+        # never a physically-meaningless reflectance (Bug: standard valid mask was ignored)
+        root = tempfile.mkdtemp()
+        lamp = np.full(2048, 20.0)
+        si = sd.SiliconStandard()
+        ref = make_session(root, "ref", {("S", 20): lamp * si.reflectance(WL, 20, "S")})
+        sam = make_session(root, "sam", {("S", 20): lamp * 0.5})
+        res = var.compute_reflectance(var.Session(sam), var.Session(ref), si, "S")
+        valid = np.asarray(res.valid, dtype=bool)
+        inv = np.where(~valid)[0]
+        self.assertGreater(len(inv), 0)                          # some invalid wavelengths exist
+        band_wl = WL[254:2031]
+        self.assertTrue(np.all(np.isnan(res.at_wavelength(float(band_wl[inv[0]])))))
+        self.assertTrue(np.all(np.isfinite(res.at_wavelength(600.0))))
+        out = os.path.join(root, "Rmask.csv")
+        res.save_csv(out)
+        data = np.loadtxt(out, delimiter=",", skiprows=1)
+        self.assertTrue(np.all(np.isnan(data[inv, 1])))          # invalid rows NaN in the export
+        self.assertFalse(np.any(np.isnan(data[np.where(valid)[0], 1])))   # valid rows finite
+
+    def test_zero_db_denominator_is_masked_not_inf(self):
+        # a zero double-beam denominator must yield NaN (masked), never inf leaking into R
+        root = tempfile.mkdtemp()
+        lamp = np.full(2048, 10.0)
+        sam_db = lamp.copy()
+        sam_db[500:505] = 0.0                                    # zero sample-DB net -> divide by zero
+        ref = make_session(root, "ref", {("P", 30): lamp}, db={"P": lamp})
+        sam = make_session(root, "sam", {("P", 30): lamp * 0.5}, db={"P": sam_db})
+        res = var.compute_reflectance(var.Session(sam), var.Session(ref), sd.ConstantStandard(1.0), "P")
+        r = res.R[0]
+        self.assertFalse(np.any(np.isinf(r)))
+        self.assertTrue(np.all(np.isnan(r[500 - 254:505 - 254])))
+        self.assertTrue(any("masked" in n for n in res.notes))
+
 if __name__ == "__main__":
     unittest.main()

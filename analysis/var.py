@@ -95,13 +95,24 @@ class Result(object):
         self.notes = notes
         self.valid = valid            # (n_lambda,) bool mask from the standard
 
+    def _masked_R(self):
+        """R with wavelengths the standard flags invalid (e.g. Si tabulation below 380 nm) set to
+        NaN, so exports and lookups never present physically-meaningless reflectance."""
+        if self.valid is None:
+            return self.R
+        R = self.R.astype(float, copy=True)
+        R[:, ~np.asarray(self.valid, dtype=bool)] = np.nan
+        return R
+
     def at_wavelength(self, wl_nm):
         i = int(np.argmin(np.abs(self.wl - wl_nm)))
+        if self.valid is not None and not bool(np.asarray(self.valid, dtype=bool)[i]):
+            return np.full(self.R.shape[0], np.nan)
         return self.R[:, i]
 
     def save_csv(self, path):
         head = "wavelength_nm," + ",".join("%g" % t for t in self.thetas)
-        np.savetxt(path, np.column_stack([self.wl, self.R.T]), delimiter=",", header=head, comments="", fmt="%.6g")
+        np.savetxt(path, np.column_stack([self.wl, self._masked_R().T]), delimiter=",", header=head, comments="", fmt="%.6g")
 
 
 def compute_reflectance(sample, reference, standard, pol, use_db=True, thetas=None):
@@ -119,7 +130,9 @@ def compute_reflectance(sample, reference, standard, pol, use_db=True, thetas=No
         per_ms = dbx["integration_ms"] != dby["integration_ms"]
         if per_ms:
             notes.append("DB spectra use different integration times (%s vs %s ms): normalised per ms" % (dbx["integration_ms"], dby["integration_ms"]))
-        db_factor = reference.net(dby, per_ms) / sample.net(dbx, per_ms)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            db_factor = reference.net(dby, per_ms) / sample.net(dbx, per_ms)
+        db_factor[~np.isfinite(db_factor)] = np.nan     # a zero DB denominator -> inf, treat as masked
         n_bad = int(np.isnan(db_factor).sum())
         if n_bad:
             notes.append("DB spectra: %d saturated pixels masked (NaN)" % n_bad)

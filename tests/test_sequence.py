@@ -357,5 +357,41 @@ class ReliabilityFixTests(unittest.TestCase):
             r.run([sq.shutter(False), sq.acquire("dark", 1, kind="dark")])
 
 
+
+
+class StabilityRegressionTests(unittest.TestCase):
+    def setUp(self):
+        cfg.STATE_FILE = os.path.join(tempfile.mkdtemp(), "stage_state.json")
+
+    def test_open_shutter_commits_state_before_move_for_failsafe(self):
+        # if forward() raises mid-open, shutter_open must already read True so that a later
+        # close_shutter_safely() actually closes it instead of no-opping (SAFETY)
+        class BoomBus(FakeBus):
+            def forward(self, addr):
+                raise RuntimeError("motor jam mid-open")
+        r = sq.Runner(BoomBus(), FakeSpec(), tempfile.mkdtemp())
+        with self.assertRaises(RuntimeError):
+            r.run_step(sq.Step("shutter", "open", open=True))
+        self.assertTrue(r.shutter_open)
+        r.bus = FakeBus()                                       # a healthy bus for the safety close
+        self.assertTrue(r.close_shutter_safely())
+        self.assertFalse(r.shutter_open)
+        self.assertIn("close", r.bus.shutter)
+
+    def test_close_shutter_clears_state_only_after_completed_close(self):
+        r = sq.Runner(FakeBus(), FakeSpec(), tempfile.mkdtemp())
+        r.run_step(sq.Step("shutter", "open", open=True))
+        self.assertTrue(r.shutter_open)
+        r.run_step(sq.Step("shutter", "close", open=False))
+        self.assertFalse(r.shutter_open)
+
+    def test_load_manifest_tolerates_non_dict_json(self):
+        # a corrupt manifest that parses as a list (not a dict) must not raise AttributeError
+        out = tempfile.mkdtemp()
+        with open(os.path.join(out, "manifest.json"), "w") as f:
+            f.write("[1, 2, 3]")
+        self.assertEqual(sq.Runner.load_manifest(out), [])
+        self.assertFalse(os.path.isfile(os.path.join(out, "manifest.json")))    # set aside, not overwritten
+
 if __name__ == "__main__":
     unittest.main()

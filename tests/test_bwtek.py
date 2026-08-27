@@ -107,6 +107,53 @@ class ITCalibrationTests(unittest.TestCase):
         self.assertEqual(bwtek.next_integration_time(1, 65535, 900), bwtek.IT_MIN_MS)
 
 
+
+
+class _Clock(object):
+    """time-module shim: scripts time.time(), delegates everything else to the real module."""
+    def __init__(self, real, seq):
+        self._real = real
+        self._seq = iter(seq)
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+    def time(self):
+        return next(self._seq)
+
+
+class StabilityRegressionTests(unittest.TestCase):
+    def test_stall_warning_with_no_integration_time_does_not_crash(self):
+        # integration_ms is None (never set) and the read is "slow": the stall-warning branch
+        # must not blow up formatting a None with %d (Bug: TypeError killed the read)
+        real = bwtek.time
+        s = bwtek.BWTek(dll=FakeDll())
+        s.open()
+        self.assertIsNone(s.integration_ms)
+        bwtek.time = _Clock(real, [100.0, 110.0])              # dt = 10 s -> stall branch
+        try:
+            counts = s.read(average=1)
+        finally:
+            bwtek.time = real
+        self.assertEqual(counts.dtype, np.uint16)
+
+    def test_usb_instance_ids_are_locale_independent(self):
+        # non-English Windows translates the "Instance ID:" label; the parser must key on the
+        # untranslated USB\... token, not the label (Bug: startswith('instance id') failed abroad)
+        localized = ("Instanz-ID:               USB\\VID_16A3&PID_2EC8\\6&13b694f9&0&2\n"
+                     "Geraetebeschreibung:      B&W TEK Spectrometer\n"
+                     "ID d'instance :           USB\\VID_0403&PID_6015\\DT03AOM0\n")
+        def fake_run(args, **kw):
+            class CP(object):
+                returncode, stdout, stderr = 0, localized, ""
+            return CP()
+        old = bwtek._run
+        bwtek._run = fake_run
+        try:
+            self.assertEqual(bwtek.usb_instance_ids("VID_16A3"), ["USB\\VID_16A3&PID_2EC8\\6&13b694f9&0&2"])
+            self.assertEqual(bwtek.usb_instance_ids("VID_0403"), ["USB\\VID_0403&PID_6015\\DT03AOM0"])
+            self.assertEqual(bwtek.usb_instance_ids("VID_FFFF"), [])
+        finally:
+            bwtek._run = old
+
 if __name__ == "__main__":
     unittest.main()
 

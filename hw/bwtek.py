@@ -15,6 +15,7 @@ Calls used (same as the original OptiComp, which is known to work with this unit
 """
 import ctypes
 import os
+import re
 import time
 
 import numpy as np
@@ -106,7 +107,7 @@ class BWTek(object):
         if r >= 0 and expect >= 0.5 and dt < 0.5 * expect:
             self._log("WARNING read took %.2f s for %d x %d ms: integration time not applied by the device?" % (dt, average, self.integration_ms))
         elif r >= 0 and dt > expect + 5.0:
-            self._log("WARNING read took %.2f s for %d x %d ms: USB stall" % (dt, average, self.integration_ms))
+            self._log("WARNING read took %.2f s for %d x %d ms: USB stall" % (dt, average, self.integration_ms or 0))
         if r < 0:
             raise BWTekError("bwtekReadResultUSB failed (%d)" % r)
         return self._buf.copy()
@@ -212,11 +213,12 @@ def usb_instance_ids(vid=SPEC_USB_VID, connected=True):
     args = ["/enum-devices", "/class", "USB"] + (["/connected"] if connected else [])
     rc, out = _pnputil(*args)
     ids = []
-    for line in out.splitlines():
-        if ":" in line and line.strip().lower().startswith("instance id"):
-            iid = line.split(":", 1)[1].strip()
-            if vid.upper() in iid.upper():
-                ids.append(iid)
+    # Match the raw (never-localised) instance-id token directly, e.g. 'USB\\VID_16A3&PID_...\\5&2f...':
+    # the "Instance ID:" label is translated on non-English Windows, but the token itself is not.
+    for tok in re.findall(r"USB\\[^\s]+", out, re.IGNORECASE):
+        tok = tok.rstrip(".,;")
+        if vid.upper() in tok.upper() and tok not in ids:
+            ids.append(tok)
     return ids
 
 

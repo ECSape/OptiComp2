@@ -199,7 +199,8 @@ for pol in ("S", "P"):
 print("\nNet signal (peak - dark) per specimen:")
 import json
 for s in SAMPLES:
-    m = json.load(open(os.path.join(HERE, s, "manifest.json")))
+    with open(os.path.join(HERE, s, "manifest.json"), encoding="utf-8") as _mf:
+        m = json.load(_mf)
     dk = [e["peak"] for e in m["spectra"] if e["kind"] == "dark"][0]
     nets = [e["peak"] - dk for e in m["spectra"] if e["kind"] == "var"]
     print("  %-11s dark=%d  net %d..%d counts" % (s, dk, min(nets), max(nets)))
@@ -228,6 +229,6 @@ for pol in ("S", "P"):
         lines.append("\\quad %s & %s \\\\" % (s.replace("asa_3d_", r"\texttt{").replace("_", r"\_") + "}", cells))
 lines.append(r"\bottomrule")
 lines.append(r"\end{tabular}")
-with open(os.path.join(FIGDIR, "tab_asa_reflectance.tex"), "w") as f:
+with open(os.path.join(FIGDIR, "tab_asa_reflectance.tex"), "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
 print("done.")

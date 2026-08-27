@@ -309,6 +309,24 @@ class ReplyIntegrityTests(unittest.TestCase):
         self.assertIn(b"3ma00011FC7", ser.sent)                  # retried towards the original target
 
 
+
+
+class PollRobustnessTests(unittest.TestCase):
+    def test_stray_line_burst_during_gs_poll_is_not_fatal(self):
+        # a stray-line burst makes query() raise a generic ElliptecError (not ReplyTimeout);
+        # _poll_until_idle must treat it as "still moving" and keep polling, not hard-abort a move
+        bus, ser = make_bus({})
+        n = {"i": 0}
+        def flaky_query(addr, cmd, timeout=None, expect=None):
+            n["i"] += 1
+            if n["i"] == 1:
+                raise ell.ElliptecError("stray line burst")
+            return {"kind": "PO", "value": 0x4473}
+        bus.query = flaky_query
+        code, pos = bus._poll_until_idle(2)
+        self.assertEqual((code, pos), (0, 0x4473))
+        self.assertGreaterEqual(n["i"], 2)
+
 if __name__ == "__main__":
     unittest.main()
 

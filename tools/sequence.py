@@ -255,7 +255,7 @@ class Runner(object):
         try:
             with open(path, encoding="utf-8") as f:
                 return list(json.load(f).get("spectra", []))
-        except ValueError:
+        except (ValueError, AttributeError, TypeError, OSError):
             # unreadable manifest: keep it for forensics instead of silently overwriting it
             aside = path + time.strftime(".corrupt_%Y%m%d_%H%M%S")
             try:
@@ -329,10 +329,13 @@ class Runner(object):
             self._move(p["addr"], p["deg"])
         elif st.kind == "shutter":
             if p["open"]:
+                # fail-safe: assume the shutter is open the moment we command it, so that if
+                # forward() raises mid-move close_shutter_safely() will still act on it
+                self.shutter_open = True
                 pos = self.bus.forward(cfg.SHUTTER)
             else:
                 pos = self.bus.backward(cfg.SHUTTER)
-            self.shutter_open = p["open"]
+                self.shutter_open = False       # only after a completed close
             self._record_state(cfg.SHUTTER, pos if pos is not None else (31 if p["open"] else 0))
         elif st.kind == "set_it":
             if p.get("save"):

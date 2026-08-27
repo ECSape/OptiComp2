@@ -483,28 +483,40 @@ class SpectrometerPanel(ttk.Frame):
     def _poll(self):
         try:
             while True:
-                status, label, value, cb = self.results.get_nowait()
-                if status == "ok":
-                    if cb:
-                        cb(value)
-                else:
-                    self.app._log_line("!! %s failed: %s" % (label, value))
-                    if label == "spec open":
-                        self.state_var.set("Init failed")
-                        self.btn_open.config(state="normal")
-                    if label == "spec auto-IT" and self.spec is not None:
-                        self.state_var.set("Connected, IT %s ms" % self.spec.integration_ms)
-                    if label == "spec live":
-                        self.worker.live.clear()
-                        self._set_live_button(False)
-                    if label == "sequence":
-                        self.app.sequence._finish("Failed/aborted: %s" % value)
-                        messagebox.showerror("Sequence failed", "%s\n\nThe queue is kept (completed steps marked ✓); fix the issue and re-run the whole queue." % value)
+                try:
+                    status, label, value, cb = self.results.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if status == "ok":
+                        if cb:
+                            cb(value)
                     else:
-                        messagebox.showerror("Spectrometer error", "%s\n%s" % (label, value))
-        except queue.Empty:
-            pass
-        self.after(100, self._poll)
+                        self.app._log_line("!! %s failed: %s" % (label, value))
+                        if label == "spec open":
+                            self.state_var.set("Init failed")
+                            self.btn_open.config(state="normal")
+                        if label == "spec auto-IT" and self.spec is not None:
+                            self.state_var.set("Connected, IT %s ms" % self.spec.integration_ms)
+                        if label == "spec recover":
+                            # a failed recover leaves the device unusable: show it, do not hang on 'Recovering...'
+                            self.state_var.set("Init failed")
+                        if label == "spec live":
+                            self.worker.live.clear()
+                            self._set_live_button(False)
+                        if label == "sequence":
+                            self.app.sequence._finish("Failed/aborted: %s" % value)
+                            messagebox.showerror("Sequence failed", "%s\n\nThe queue is kept (completed steps marked ✓); fix the issue and re-run the whole queue." % value)
+                        else:
+                            messagebox.showerror("Spectrometer error", "%s\n%s" % (label, value))
+                except Exception as e:
+                    # one bad event must never kill the pump (it drives live view, auto-IT and _finish)
+                    try:
+                        self.app._log_line("!! spectrometer poll error (%s): %s" % (label, e))
+                    except Exception:
+                        pass
+        finally:
+            self.after(100, self._poll)
 
     def shutdown(self, timeout=5.0):
         """Close the device on the spectrometer worker (the DLL is not thread-safe); wait at most
