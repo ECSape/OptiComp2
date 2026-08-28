@@ -1,0 +1,152 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=22mm]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{longtable}
+\usepackage{needspace}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{ink}{HTML}{222222}
+\definecolor{accent}{HTML}{0072B2}
+\definecolor{ok}{HTML}{009E73}
+\definecolor{soft2}{HTML}{8C8C8C}
+
+\color{ink}
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries\color{ink}}{}{0em}{}
+\setlist{itemsep=2pt,topsep=3pt,parsep=0pt}
+\renewcommand{\arraystretch}{1.18}
+\setlength{\LTpre}{4pt}\setlength{\LTpost}{8pt}
+
+\pagestyle{fancy}\fancyhf{}
+\lhead{\small\color{accent}OptiComp2}
+\rhead{\small Verification register}
+\cfoot{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+
+\begin{document}
+
+% ---- title ----
+\thispagestyle{empty}
+\vspace*{2.2cm}
+\begin{center}
+{\Huge\bfseries\color{accent} OptiComp2}\\[6pt]
+{\LARGE\bfseries Verification register and test report}\\[16pt]
+{\large Every automated test of the instrument-control software, with coverage figures}\\[26pt]
+{\large Haoxiang Zhang}\\[6pt]
+{\normalsize August 2026 \quad$\cdot$\quad 149 tests \quad$\cdot$\quad 9 modules \quad$\cdot$\quad 31 test classes}
+\end{center}
+\vfill
+\noindent\small This report lists every automated test in OptiComp2, grouped by module and by what it
+verifies, together with the coverage figures. The whole suite runs without any hardware --- against a
+fake serial port and a fake spectrometer DLL --- so it can be run on a workstation and on the
+instrument PC alike. It is the executable specification of the safety and correctness properties
+described in the change list.
+\newpage
+
+\tableofcontents
+\newpage
+
+% ---- 1 summary ----
+\section{Summary}
+
+\begin{center}
+\includegraphics[width=0.52\linewidth]{figures/vfig_pass.pdf}
+\end{center}
+
+\noindent The suite comprises \textbf{149 tests} in 31 classes across 9 modules, and all pass. Run it
+with:
+\begin{quote}\code{py -m unittest discover -s tests}\end{quote}
+Every test uses in-memory fakes (a scripted serial port, a fake \code{BWTEKUSB.dll}, a demo bus and
+spectrometer), so no instrument, lamp or motion is involved and the suite is deterministic and safe to
+run anywhere. Fault injection (swallowed commands, truncated replies, a hung DLL, a corrupt manifest,
+an operator-absent pause) is used to exercise the recovery and abort paths that matter most on the
+real instrument.
+
+\section{Coverage by theme}
+
+\begin{center}
+\includegraphics[width=0.96\linewidth]{figures/vfig_theme.pdf}
+\end{center}
+
+\noindent The tests are grouped below by the property they establish:
+\begin{itemize}
+\item \textbf{Measurement correctness (36)} --- the reflectance relation, dark matching, saturation and
+invalid-wavelength masking, the Fresnel/BK7 standards, the scan gatekeeper, manifest bookkeeping and
+integration-time calibration.
+\item \textbf{Protocol robustness (32)} --- reply decoding, swallowed-command resend, stray/truncated
+replies, timeouts, corrective moves and the mechanical-timeout policy on the Elliptec bus.
+\item \textbf{Safety \& fail-safe (25)} --- the shutter is closed on any error or abort, the fibre arm
+is protected from homing, soft limits hold, auto integration time aborts on no light, and the
+state gate blocks motion after an anomaly.
+\item \textbf{GUI \& layout (20)} --- the theme and widgets, the end-to-end demo tour, the feature-
+parity reference and the layout audit at two window sizes.
+\item \textbf{Hardware recovery (17)} --- the spectrometer reopen / USB-restart ladder and the
+monitor/cycle tools recovering from an injected read failure.
+\item \textbf{State bookkeeping (12)} --- the motor-state record: round-trip, wrap-around comparison,
+settling tolerance and corrupt-record handling.
+\item \textbf{Demo-harness integrity (7)} --- the fakes never touch real hardware and reproduce
+realistic, seeded spectra.
+\end{itemize}
+
+\section{Coverage by module}
+
+\begin{center}
+\includegraphics[width=0.96\linewidth]{figures/vfig_module.pdf}
+\end{center}
+
+\begin{center}\small
+\begin{tabular}{@{}>{\ttfamily}l l r@{}}
+\toprule
+\normalfont\textbf{Module} & \textbf{Functional area} & \textbf{Tests} \\
+\midrule
+test\_elliptec.py & Motion protocol (Elliptec bus) & 39 \\
+test\_sequence.py & Measurement sequence and safety & 34 \\
+test\_bwtek.py & Spectrometer and recovery & 19 \\
+test\_ui\_theme.py & GUI theme and widgets & 13 \\
+test\_monitor.py & Unattended tools (monitor / cycle / restore) & 11 \\
+test\_analysis.py & Analysis and reflectance & 9 \\
+test\_demo\_hw.py & Demo-hardware harness & 9 \\
+test\_gui\_demo.py & GUI end-to-end (demo hardware) & 8 \\
+test\_stagestate.py & Motor-state safety & 7 \\
+\midrule
+\normalfont\textbf{Total} & & \textbf{149} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Methodology}
+\begin{itemize}
+\item \textbf{No hardware.} A scripted serial port answers Elliptec queries from a table; a fake DLL
+returns canned frames and error codes; a demo bus and spectrometer drive the GUI. The production code
+path is exercised unchanged --- only the lowest-level back-end is substituted.
+\item \textbf{Fault injection.} Tests force the failure modes seen on the instrument: a swallowed
+\code{ma}, a reply truncated by the read timeout, a stray reply from another module, a mechanical
+timeout (\code{GS02}), a hung DLL (read $-99$), a corrupt manifest and an operator-absent pause --- and
+assert the resend, discard, abort or recovery that must follow.
+\item \textbf{Safety assertions.} The shutter-closing, protected-home and soft-limit properties are
+asserted directly (for example, an error raised with the shutter open must leave it closed).
+\item \textbf{GUI.} The demo tour drives the whole workflow in the Tk loop and a layout audit checks
+that no widget is clipped at 1280$\times$820 or 1100$\times$720.
+\item \textbf{Both platforms.} The suite passes on a workstation and on the instrument PC
+(Python~3.9, \code{py -m unittest discover -s tests}), with no third-party test runner.
+\end{itemize}
+
+\newpage
+\section{Full test register}
+\small Each test is listed with its one-line purpose (from the test's own comment, or its name where it
+is self-describing). Test names are the exact method names, for traceability.
+\normalsize
+
+\input{register.tex}
+
+\end{document}
